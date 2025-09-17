@@ -1,0 +1,165 @@
+sudo tee /usr/local/sbin/eic-doctor.sh >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+red() { printf "\e[31m%s\e[0m\n" "$*"; }
+grn() { printf "\e[32m%s\e[0m\n" "$*"; }
+ylw() { printf "\e[33m%s\e[0m\n" "$*"; }
+hdr() { printf "\n=== %s ===\n" "$*"; }
+
+PASS=()
+FAIL=()
+WARN=()
+
+chk() {
+  local cond="$1" ok="$2" bad="$3"
+  if eval "$cond"; then grn "✔ $ok"; PASS+=("$ok")
+  else red "✖ $bad"; FAIL+=("$bad")
+  fi
+}
+
+hdr "BASICS"
+echo -n "OS: "; cat /etc/redhat-release || true
+echo "Kernel: $(uname -r)"
+echo "Hostname: $(hostname -f 2>/dev/null || hostname)"
+echo "Time sync (drift can break auth):"
+timedatectl status 2>/dev/null | sed -n '1,6p' || true
+
+hdr "PACKAGES"
+if command -v rpm >/dev/null; then
+  EIC_VER=$(rpm -q ec2-instance-connect 2>/dev/null || true)
+  SEL_VER=$(rpm -q ec2-instance-connect-selinux 2>/dev/null || true)
+  echo "ec2-instance-connect: ${EIC_VER:-not installed}"
+  echo "ec2-instance-connect-selinux: ${SEL_VER:-not installed}"
+  chk "[[ \"$EIC_VER\" =~ ec2-instance-connect- ]]" \
+      "ec2-instance-connect package installed" \
+      "Install ec2-instance-connect (and -selinux) RPM"
+  chk "[[ -z \"$SEL_VER\" ]] || [[ \"$SEL_VER\" =~ ec2-instance-connect-selinux- ]]" \
+      "SELinux policy package present (or SELinux disabled)" \
+      "Install ec2-instance-connect-selinux OR disable SELinux (not recommended)"
+else
+  red "RPM tools missing?"
+  FAIL+=("RPM/YUM not available")
+fi
+
+hdr "FILES & HOOKS"
+for f in /opt/aws/bin/eic_run_authorized_keys /opt/aws/bin/eic_harvest_hostkeys; do
+  if [[ -x "$f" ]]; then grn "✔ Found $f"; PASS+=("Has $f")
+  else red "✖ Missing $f"; FAIL+=("Missing $f")
+  fi
+done
+
+hdr "SSHD CONFIG"
+SSHD=/etc/ssh/sshd_config
+echo "Checking $SSHD"
+AKC=$(grep -E '^\s*AuthorizedKeysCommand\s' "$SSHD" 2>/dev/null || true)
+AKCU=$(grep -E '^\s*AuthorizedKeysCommandUser\s' "$SSHD" 2>/dev/null || true)
+PUBK=$(grep -E '^\s*PubkeyAuthentication\s+yes\b' "$SSHD" 2>/dev/null || true)
+PASSWD=$(grep -E '^\s*PasswordAuthentication\s+no\b' "$SSHD" 2>/dev/null || true)
+
+chk "[[ \"$AKC\" =~ eic_run_authorized_keys ]]" \
+    "AuthorizedKeysCommand points to eic_run_authorized_keys" \
+    "Set 'AuthorizedKeysCommand /opt/aws/bin/eic_run_authorized_keys %u %f'"
+
+chk "[[ \"$AKCU\" =~ ec2-instance-connect ]]" \
+    "AuthorizedKeysCommandUser is ec2-instance-connect" \
+    "Set 'AuthorizedKeysCommandUser ec2-instance-connect'"
+
+chk "[[ -n \"$PUBK\" ]]" \
+    "PubkeyAuthentication yes" \
+    "Enable 'PubkeyAuthentication yes'"
+
+if [[ -z "$PASSWD" ]]; then
+  ylw "⚠ PasswordAuthentication isn't 'no' (not fatal but recommended)"
+  WARN+=("PasswordAuthentication not set to no")
+else
+  grn "✔ PasswordAuthentication no"
+fi
+
+hdr "SERVICES"
+for svc in sshd ec2-instance-connect; do
+  if systemctl is-enabled "$svc" &>/dev/null; then
+    grn "✔ $svc enabled"
+  else
+    ylw "⚠ $svc not enabled (will not persist on reboot)"; WARN+=("$svc not enabled")
+  fi
+  if systemctl is-active "$svc" &>/dev/null; then
+    grn "✔ $svc running"
+  else
+    red "✖ $svc not running"; FAIL+=("$svc not running")
+  fi
+done
+
+hdr "SELINUX & FIREWALL"
+SEMODE=$(getenforce 2>/dev/null || echo "unknown")
+echo "SELinux mode: $SEMODE"
+if [[ "$SEMODE" == "Enforcing" ]]; then
+  # Check that policy module is loaded
+  if command -v semodule &>/dev/null && semodule -l | grep -q ec2-instance-connect; then
+    grn "✔ SELinux module for ec2-instance-connect is loaded"
+  else
+    red "✖ SELinux enforcing but ec2-instance-connect policy not loaded"
+    FAIL+=("SELinux enforcing without ec2-instance-connect policy")
+  fi
+fi
+
+if systemctl is-active firewalld &>/dev/null; then
+  echo "firewalld active; current SSH rule(s):"
+  firewall-cmd --list-ports 2>/dev/null | tr ' ' '\n' | grep -E '^22/' || true
+  firewall-cmd --list-services 2>/dev/null | tr ' ' '\n' | grep -E '^ssh$' || true
+  if firewall-cmd --query-service ssh &>/dev/null || firewall-cmd --list-ports | grep -qE '\b22/(tcp|udp)\b'; then
+    grn "✔ firewalld allows SSH"
+  else
+    red "✖ firewalld blocks SSH 22"; FAIL+=("firewalld blocks 22/tcp")
+  fi
+else
+  ylw "⚠ firewalld not active (ok if using SG/NACL only)"; WARN+=("firewalld inactive")
+fi
+
+hdr "INSTANCE METADATA (IMDS)"
+TOKEN=$(curl -sS -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+if [[ -n "$TOKEN" ]]; then
+  grn "✔ IMDSv2 reachable"
+  IID=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || true)
+  AZ=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone || true)
+  REGION="${AZ%?}"
+  ROLE=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/security-credentials/ || true)
+  echo "InstanceId: ${IID:-unknown}  Region: ${REGION:-unknown}  Role: ${ROLE:-none}"
+  chk "[[ -n \"$ROLE\" ]]" \
+      "Instance profile/role attached" \
+      "No instance profile attached (required for EIC SendSSHPublicKey)"
+else
+  red "✖ Cannot reach IMDSv2 (network/IMDS disabled?)"
+  FAIL+=("IMDSv2 unreachable")
+fi
+
+hdr "OPTIONAL AWS CHECKS"
+if command -v aws &>/dev/null && [[ -n "${REGION:-}" ]] && [[ -n "${IID:-}" ]]; then
+  export AWS_REGION="$REGION"
+  # Minimal sanity: can we describe the instance?
+  if aws ec2 describe-instances --instance-ids "$IID" >/dev/null 2>&1; then
+    grn "✔ AWS API reachable with instance role"
+  else
+    ylw "⚠ AWS API not reachable or role lacks ec2:DescribeInstances"; WARN+=("No DescribeInstances")
+  fi
+else
+  ylw "⚠ Skipping AWS API checks (aws cli or metadata missing)"
+  WARN+=("Skipped AWS API checks")
+fi
+
+hdr "SECURITY GROUP TIP (manual)"
+echo "Ensure the instance SG allows inbound tcp/22 FROM the EC2 Instance Connect Endpoint ENI(s) or its SG."
+echo "And NACLs allow stateful return traffic."
+
+hdr "SUMMARY"
+echo "Passed: ${#PASS[@]}  Failed: ${#FAIL[@]}  Warnings: ${#WARN[@]}"
+[[ ${#PASS[@]} -gt 0 ]] && printf '%s\n' "${PASS[@]}" | sed 's/^/  + /'
+[[ ${#FAIL[@]} -gt 0 ]] && { red "Failures:"; printf '%s\n' "${FAIL[@]}" | sed 's/^/  - /'; }
+[[ ${#WARN[@]} -gt 0 ]] && { ylw "Warnings:"; printf '%s\n' "${WARN[@]}" | sed 's/^/  ~ /'; }
+
+if [[ ${#FAIL[@]} -gt 0 ]]; then
+  exit 2
+fi
+EOF
+sudo chmod +x /usr/local/sbin/eic-doctor.sh
+sudo /usr/local/sbin/eic-doctor.sh
