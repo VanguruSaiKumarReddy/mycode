@@ -1,0 +1,120 @@
+schemaVersion: "2.2"
+description: "Install & configure EC2 Instance Connect on Amazon Linux 2, RHEL 8/9, Ubuntu 22.04"
+parameters: {}
+mainSteps:
+  - name: InstallAndConfigure
+    action: aws:runShellScript
+    inputs:
+      runCommand:
+        - |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          log(){ echo "[$(date -Is)] $*"; }
+
+          # --- Detect OS/Arch ---
+          source /etc/os-release || true
+          ID="${ID:-unknown}"
+          VERSION_ID="${VERSION_ID:-unknown}"
+          ARCH="$(uname -m)"
+
+          log "Detected: ID=${ID}, VERSION_ID=${VERSION_ID}, ARCH=${ARCH}"
+
+          # --- Install EC2 Instance Connect per OS ---
+          case "${ID}-${VERSION_ID}" in
+            amzn-2)
+              log "Installing on Amazon Linux 2"
+              yum install -y ec2-instance-connect
+              ;;
+
+            rhel-8*)
+              log "Installing on RHEL 8 (${ARCH})"
+              cd /tmp
+              if [[ "${ARCH}" == "x86_64" ]]; then
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+              else
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-2.0.0-5.rhel8.aarch64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+              fi
+              yum install -y ./ec2-instance-connect-*.rpm
+              ;;
+
+            rhel-9*)
+              log "Installing on RHEL 9 (${ARCH})"
+              cd /tmp
+              if [[ "${ARCH}" == "x86_64" ]]; then
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel9.x86_64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+              else
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-2.0.0-5.rhel9.aarch64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+              fi
+              dnf install -y ./ec2-instance-connect-*.rpm
+              ;;
+
+            ubuntu-22.04|ubuntu-22*)
+              log "Installing on Ubuntu 22.04"
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -y
+              apt-get install -y ec2-instance-connect
+              ;;
+
+            *)
+              log "Unsupported OS: ${ID}-${VERSION_ID}"
+              exit 1
+              ;;
+          esac
+
+          # --- Determine eic_run_authorized_keys path ---
+          EIC_PATH=""
+          for p in /opt/aws/bin/eic_run_authorized_keys /usr/bin/eic_run_authorized_keys ; do
+            if [[ -x "$p" ]]; then EIC_PATH="$p"; break; fi
+          done
+          if [[ -z "$EIC_PATH" ]]; then
+            log "ERROR: eic_run_authorized_keys not found after install."
+            exit 1
+          fi
+          log "Using AuthorizedKeysCommand path: $EIC_PATH"
+
+          # --- Backup & patch sshd_config idempotently ---
+          SSHD="/etc/ssh/sshd_config"
+          BAK="/etc/ssh/sshd_config.bak.$(date +%s)"
+          cp -a "$SSHD" "$BAK"
+
+          sed -i '/^[#[:space:]]*AuthorizedKeysCommand[[:space:]]/d' "$SSHD"
+          sed -i '/^[#[:space:]]*AuthorizedKeysCommandUser[[:space:]]/d' "$SSHD"
+          sed -i '/^[#[:space:]]*PubkeyAuthentication[[:space:]]/d' "$SSHD"
+
+          cat <<EOF >> "$SSHD"
+
+# EC2 Instance Connect (managed by SSM)
+AuthorizedKeysCommand ${EIC_PATH} %u %f
+AuthorizedKeysCommandUser ec2-instance-connect
+PubkeyAuthentication yes
+EOF
+
+          # --- Enable/Start service (best-effort; some OS may not have a unit) ---
+          systemctl enable --now ec2-instance-connect 2>/dev/null || true
+
+          # ssh service name differs (ssh on Ubuntu, sshd elsewhere)
+          if systemctl list-unit-files | grep -q '^ssh\.service'; then
+            systemctl restart ssh
+          else
+            systemctl restart sshd
+          fi
+
+          # --- Validate ---
+          which egrep >/dev/null 2>&1 || true
+          grep -E "AuthorizedKeysCommand[[:space:]]+${EIC_PATH}" "$SSHD" >/dev/null
+          id ec2-instance-connect >/dev/null 2>&1 || true
+
+          # Print status (non-fatal if service missing)
+          systemctl is-active ec2-instance-connect >/dev/null 2>&1 && log "ec2-instance-connect: active" || log "ec2-instance-connect: unit not present/active (OK on some OS)"
+          if systemctl list-unit-files | grep -q '^ssh\.service'; then
+            systemctl is-active ssh >/dev/null && log "ssh: active"
+          else
+            systemctl is-active sshd >/dev/null && log "sshd: active"
+          fi
+
+          log "EC2 Instance Connect installation complete."
