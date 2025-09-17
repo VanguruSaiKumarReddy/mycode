@@ -1,5 +1,5 @@
 schemaVersion: "2.2"
-description: "Install & configure EC2 Instance Connect on Amazon Linux 2, RHEL 8/9, and Ubuntu 22.04 (no heredocs)"
+description: "Install & configure EC2 Instance Connect on Amazon Linux 2, RHEL 8/9, and Ubuntu 22.04"
 parameters: {}
 mainSteps:
   - name: InstallAndConfigure
@@ -9,7 +9,6 @@ mainSteps:
         - |
           #!/usr/bin/env bash
           set -euo pipefail
-
           log(){ echo "[$(date -Is)] $*"; }
 
           # Detect OS/Arch
@@ -19,7 +18,7 @@ mainSteps:
           ARCH="$(uname -m)"
           log "Detected: ID=${ID}, VERSION_ID=${VERSION_ID}, ARCH=${ARCH}"
 
-          # Install EC2 Instance Connect per OS
+          # Install per-OS
           case "${ID}-${VERSION_ID}" in
             amzn-2)
               log "Installing on Amazon Linux 2"
@@ -65,18 +64,21 @@ mainSteps:
               ;;
           esac
 
-          # Find path to eic_run_authorized_keys
-          EIC_PATH=""
-          for p in /opt/aws/bin/eic_run_authorized_keys /usr/bin/eic_run_authorized_keys; do
-            [[ -x "$p" ]] && EIC_PATH="$p" && break
-          done
+          # Locate eic_run_authorized_keys robustly (Ubuntu paths vary)
+          EIC_PATH="$(command -v eic_run_authorized_keys || true)"
+          if [[ -z "$EIC_PATH" ]] && command -v dpkg >/dev/null 2>&1; then
+            EIC_PATH="$(dpkg -L ec2-instance-connect 2>/dev/null | grep -E '/eic_run_authorized_keys$' | head -n1 || true)"
+          fi
+          if [[ -z "$EIC_PATH" ]]; then
+            EIC_PATH="$(/usr/bin/find /opt /usr -maxdepth 5 -type f -name eic_run_authorized_keys 2>/dev/null | head -n1 || true)"
+          fi
           if [[ -z "$EIC_PATH" ]]; then
             log "ERROR: eic_run_authorized_keys not found after install."
             exit 1
           fi
           log "Using AuthorizedKeysCommand path: $EIC_PATH"
 
-          # Backup & patch sshd_config (no heredoc)
+          # Patch sshd_config safely
           SSHD="/etc/ssh/sshd_config"
           cp -a "$SSHD" "${SSHD}.bak.$(date +%s)"
           sed -i '/^[#[:space:]]*AuthorizedKeysCommand[[:space:]]/d' "$SSHD"
@@ -87,7 +89,7 @@ mainSteps:
           printf 'AuthorizedKeysCommandUser ec2-instance-connect\n' >> "$SSHD"
           printf 'PubkeyAuthentication yes\n' >> "$SSHD"
 
-          # Enable/Start service (best-effort)
+          # Enable/start services (best-effort)
           systemctl enable --now ec2-instance-connect 2>/dev/null || true
           if systemctl list-unit-files | grep -q '^ssh\.service'; then
             systemctl restart ssh
@@ -98,7 +100,7 @@ mainSteps:
           # Validate
           grep -E "AuthorizedKeysCommand[[:space:]]+${EIC_PATH}" "$SSHD" >/dev/null
           id ec2-instance-connect >/dev/null 2>&1 || true
-          systemctl is-active ec2-instance-connect >/dev/null 2>&1 && log "ec2-instance-connect: active" || log "ec2-instance-connect: not active (may be OK on some distros)"
+          systemctl is-active ec2-instance-connect >/dev/null 2>&1 && log "ec2-instance-connect: active" || log "ec2-instance-connect: not active (may be OK)"
           if systemctl list-unit-files | grep -q '^ssh\.service'; then
             systemctl is-active ssh >/dev/null && log "ssh: active" || log "ssh: not active"
           else
