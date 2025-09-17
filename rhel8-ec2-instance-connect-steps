@@ -1,0 +1,40 @@
+#!/bin/bash
+set -euo pipefail
+
+EIC_URL="${EIC_URL:-http://artifactory.company.local/ec2-instance-connect-2.0-0.5.rhel8.noarch.rpm}"
+EIC_SELINUX_URL="${EIC_SELINUX_URL:-http://artifactory.company.local/ec2-instance-connect-selinux-2.0-0.5.noarch.rpm}"
+
+echo "=== Installing EC2 Instance Connect from Artifactory ==="
+TMPDIR=$(mktemp -d)
+cd "$TMPDIR"
+
+curl -s -O "$EIC_URL"
+curl -s -O "$EIC_SELINUX_URL"
+
+sudo yum install -y ./ec2-instance-connect-*.rpm
+
+echo "=== Configuring sshd_config for EC2 Instance Connect ==="
+SSHD_CONFIG="/etc/ssh/sshd_config"
+
+# Remove old lines if they exist
+sudo sed -i '/AuthorizedKeysCommand /d' $SSHD_CONFIG
+sudo sed -i '/AuthorizedKeysCommandUser /d' $SSHD_CONFIG
+sudo sed -i '/PubkeyAuthentication /d' $SSHD_CONFIG
+
+# Append required settings
+cat <<'EOF' | sudo tee -a $SSHD_CONFIG
+
+# EC2 Instance Connect configuration
+AuthorizedKeysCommand /opt/aws/bin/eic_run_authorized_keys %u %f
+AuthorizedKeysCommandUser ec2-instance-connect
+PubkeyAuthentication yes
+EOF
+
+echo "=== Enabling services ==="
+sudo systemctl enable --now ec2-instance-connect
+sudo systemctl restart sshd
+
+echo "=== Validation ==="
+rpm -q ec2-instance-connect ec2-instance-connect-selinux
+ls -l /opt/aws/bin/eic_*
+systemctl is-active ec2-instance-connect sshd && echo "✅ EC2 Instance Connect setup complete."
