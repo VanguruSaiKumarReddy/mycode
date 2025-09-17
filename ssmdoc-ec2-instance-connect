@@ -1,5 +1,5 @@
 schemaVersion: "2.2"
-description: "Install & configure EC2 Instance Connect on AL2, RHEL 8/9, and Ubuntu 22.04 (AWS-documented paths)"
+description: "Install & configure EC2 Instance Connect on Amazon Linux 2, RHEL 8, and Ubuntu 22.04"
 parameters: {}
 mainSteps:
   - name: InstallAndConfigure
@@ -37,35 +37,15 @@ mainSteps:
               log "Installing on RHEL 8 (${ARCH})"
               mkdir -p /tmp/ec2-instance-connect && cd /tmp/ec2-instance-connect
               if [[ "${ARCH}" == "x86_64" ]]; then
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-                yum install -y /tmp/ec2-instance-connect/ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm \
-                               /tmp/ec2-instance-connect/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+                yum install -y ./ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm \
+                               ./ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
               else
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-2.0.0-5.rhel8.aarch64.rpm
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-                yum install -y /tmp/ec2-instance-connect/ec2-instance-connect-2.0.0-5.rhel8.aarch64.rpm \
-                               /tmp/ec2-instance-connect/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-              fi
-              EIC_PATH="/opt/aws/bin/eic_run_authorized_keys"
-              ;;
-
-            ####################################################################
-            # RHEL 9 (x86_64 / aarch64) — use AWS doc S3 links
-            ####################################################################
-            rhel-9*)
-              log "Installing on RHEL 9 (${ARCH})"
-              mkdir -p /tmp/ec2-instance-connect && cd /tmp/ec2-instance-connect
-              if [[ "${ARCH}" == "x86_64" ]]; then
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel9.x86_64.rpm
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-                yum install -y /tmp/ec2-instance-connect/ec2-instance-connect-2.0.0-5.rhel9.x86_64.rpm \
-                               /tmp/ec2-instance-connect/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-              else
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-2.0.0-5.rhel9.aarch64.rpm
-                curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
-                yum install -y /tmp/ec2-instance-connect/ec2-instance-connect-2.0.0-5.rhel9.aarch64.rpm \
-                               /tmp/ec2-instance-connect/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-2.0.0-5.rhel8.aarch64.rpm
+                curl -fLO https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_arm64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
+                yum install -y ./ec2-instance-connect-2.0.0-5.rhel8.aarch64.rpm \
+                               ./ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
               fi
               EIC_PATH="/opt/aws/bin/eic_run_authorized_keys"
               ;;
@@ -78,10 +58,12 @@ mainSteps:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -y
               apt-get install -y ec2-instance-connect
-              # Per AWS docs for Ubuntu:
               EIC_PATH="/usr/share/ec2-instance-connect/eic_run_authorized_keys"
               ;;
 
+            ####################################################################
+            # Fallback
+            ####################################################################
             *)
               log "Unsupported OS: ${ID}-${VERSION_ID}"
               exit 1
