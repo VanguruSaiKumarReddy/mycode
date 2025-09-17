@@ -1,42 +1,18 @@
 #!/usr/bin/env bash
-# EC2 Instance Connect installer for RHEL 8 (x86_64)
-
 set -euo pipefail
 
-# --- Prepare temp dir ---
-WORKDIR=/tmp/eic-install
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+mkdir -p /tmp/ec2-instance-connect && cd /tmp/ec2-instance-connect
 
-# --- Download RPMs from AWS S3 ---
-echo "==> Downloading EC2 Instance Connect RPMs (RHEL8, x86_64, us-east-1)..."
-curl -fL -o ec2-instance-connect.rpm \
-  https://amazon-ec2-instance-connect-us-east-1.s3.us-east-1.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0-0.5.rhel8.noarch.rpm
+# From AWS docs (linux_amd64, RHEL8, x86_64)
+curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm
+curl -O https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
 
-curl -fL -o ec2-instance-connect-selinux.rpm \
-  https://amazon-ec2-instance-connect-us-east-1.s3.us-east-1.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0-0.5.noarch.rpm
+sudo yum install -y ./ec2-instance-connect-2.0.0-5.rhel8.x86_64.rpm ./ec2-instance-connect-selinux-2.0.0-5.noarch.rpm
 
-# --- Verify downloads ---
-echo "==> Verifying RPMs..."
-ls -lh *.rpm
-file *.rpm || true
-
-# --- Install packages ---
-echo "==> Installing RPMs..."
-if command -v dnf >/dev/null 2>&1; then
-  sudo dnf install -y ./ec2-instance-connect*.rpm
-else
-  sudo yum install -y ./ec2-instance-connect*.rpm
-fi
-
-# --- Patch sshd_config ---
+# Update sshd_config
 SSHD=/etc/ssh/sshd_config
-echo "==> Updating $SSHD..."
-sudo sed -i '/^#\?AuthorizedKeysCommand /d' "$SSHD"
-sudo sed -i '/^#\?AuthorizedKeysCommandUser /d' "$SSHD"
-sudo sed -i '/^#\?PubkeyAuthentication /d' "$SSHD"
-
-cat <<'EOF' | sudo tee -a "$SSHD" >/dev/null
+sudo sed -i '/^#\?AuthorizedKeysCommand /d;/^#\?AuthorizedKeysCommandUser /d;/^#\?PubkeyAuthentication /d' "$SSHD"
+sudo tee -a "$SSHD" >/dev/null <<'EOF'
 
 # EC2 Instance Connect
 AuthorizedKeysCommand /opt/aws/bin/eic_run_authorized_keys %u %f
@@ -44,13 +20,5 @@ AuthorizedKeysCommandUser ec2-instance-connect
 PubkeyAuthentication yes
 EOF
 
-# --- Enable and start services ---
-echo "==> Enabling services..."
 sudo systemctl enable --now ec2-instance-connect
 sudo systemctl restart sshd
-
-# --- Quick validation ---
-echo "==> Validation..."
-rpm -q ec2-instance-connect ec2-instance-connect-selinux || true
-ls -l /opt/aws/bin/eic_* || true
-systemctl is-active ec2-instance-connect sshd && echo "✅ EC2 Instance Connect is installed and running."
