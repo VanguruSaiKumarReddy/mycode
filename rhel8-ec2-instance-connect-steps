@@ -38,3 +38,10 @@ echo "=== Validation ==="
 rpm -q ec2-instance-connect ec2-instance-connect-selinux
 ls -l /opt/aws/bin/eic_*
 systemctl is-active ec2-instance-connect sshd && echo "✅ EC2 Instance Connect setup complete."
+
+
+
+
+"curl -O https://amazon-ec2-instance-connect-us-east-1.s3.us-east-1.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0-0.5.rhel8.noarch.rpm",
+    "curl -O https://amazon-ec2-instance-connect-us-east-1.s3.us-east-1.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0-0.5.noarch.rpm",
+    "yum install -y ./ec2-instance-connect-*.rpm",
