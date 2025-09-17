@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1) Download RPMs (follow redirects; fail on HTTP errors)
+sudo mkdir -p /tmp/ec2-instance-connect
+cd /tmp/ec2-instance-connect
+
+sudo curl -fL -o ec2-instance-connect.rpm \
+  "https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-2.0.0-5.rhel9.x86_64.rpm"
+
+sudo curl -fL -o ec2-instance-connect-selinux.rpm \
+  "https://amazon-ec2-instance-connect-us-west-2.s3.us-west-2.amazonaws.com/latest/linux_amd64/ec2-instance-connect-selinux-2.0.0-5.noarch.rpm"
+
+# (Optional) sanity check: these should show "RPM"
+file ec2-instance-connect*.rpm || true
+
+# 2) Ensure OpenSSH server exists (some minimal images omit it)
+sudo dnf install -y openssh-server
+
+# 3) Install EIC RPMs
+sudo dnf install -y ./ec2-instance-connect.rpm ./ec2-instance-connect-selinux.rpm
+
+# 4) Configure sshd (per AWS docs: helper in /opt/aws/bin)
+SSHD="/etc/ssh/sshd_config"
+sudo cp -a "$SSHD" "${SSHD}.bak.$(date +%s)"
+sudo sed -i '/^[#[:space:]]*AuthorizedKeysCommand[[:space:]]/d' "$SSHD"
+sudo sed -i '/^[#[:space:]]*AuthorizedKeysCommandUser[[:space:]]/d' "$SSHD"
+sudo sed -i '/^[#[:space:]]*PubkeyAuthentication[[:space:]]/d' "$SSHD"
+
+{
+  echo
+  echo "# EC2 Instance Connect"
+  echo "AuthorizedKeysCommand /opt/aws/bin/eic_run_authorized_keys %u %f"
+  echo "AuthorizedKeysCommandUser ec2-instance-connect"
+  echo "PubkeyAuthentication yes"
+} | sudo tee -a "$SSHD" >/dev/null
+
+# 5) Enable services and restart SSH
+sudo systemctl enable --now sshd
+sudo systemctl enable --now ec2-instance-connect || true
+sudo systemctl restart sshd
+
+# 6) Verify
+rpm -q ec2-instance-connect ec2-instance-connect-selinux
+test -x /opt/aws/bin/eic_run_authorized_keys && echo "helper OK: /opt/aws/bin/eic_run_authorized_keys"
+systemctl is-active ec2-instance-connect && echo "ec2-instance-connect: active"
+systemctl is-active sshd && echo "sshd: active"
+echo "✅ RHEL9 (x86_64) EC2 Instance Connect installed and configured."
