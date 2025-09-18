@@ -4,174 +4,137 @@ set -euo pipefail
 # =========================
 # Config (override via env)
 # =========================
-ROLE_NAME="${ROLE_NAME:-TFC.RL.AWS.Enterprise.BootStrapAuto}"   # role name in each member account
-PROFILE="${PROFILE:-default}"                                   # local AWS CLI profile for STS call
+ROLE_NAME="${ROLE_NAME:-TFC.RL.AWS.Enterprise.BootStrapAuto}"   # role in each member account
+PROFILE="${PROFILE:-default}"                                   # local CLI profile for STS
 REGIONS=(${REGIONS:-"us-east-1" "us-east-2" "us-west-2"})
 ACCOUNTS_FILE="${ACCOUNTS_FILE:-accounts.txt}"                  # one account ID per line (# comments ok)
 
-# Shared SSM Document details
-DOC_OWNER="${DOC_OWNER:-925514488322}"                          # <— owner account ID
-DOC_NAME="${DOC_NAME:-tfc-ami-factory-Install-EC2InstanceConnect-prod}"  # <— document name
-DOC_VERSION="${DOC_VERSION:-\$DEFAULT}"                         # explicit version number or $DEFAULT
+# The local script you want to run on instances
+SCRIPT_PATH="${SCRIPT_PATH:-payload.sh}"                        # set to your file
+SCRIPT_ARGS="${SCRIPT_ARGS:-}"                                   # optional args passed to the script
 
-# Optional parameters for the doc (JSON string). Example:
-# DOC_PARAMETERS='{"commands":["echo hello","uname -a"]}'
-DOC_PARAMETERS="${DOC_PARAMETERS:-{}}"
+# Fan-out safety knobs
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-50%}"                       # e.g., "100" or "50%"
+MAX_ERRORS="${MAX_ERRORS:-10%}"                                  # e.g., "20" or "10%"
+BATCH_SIZE="${BATCH_SIZE:-50}"                                   # API limit is 50 instance-ids per call
+
+# Optional: capture stdout/stderr to S3
+OUTPUT_S3_BUCKET="${OUTPUT_S3_BUCKET:-}"                        # e.g., my-ops-logs
+OUTPUT_S3_PREFIX="${OUTPUT_S3_PREFIX:-ssm/linux}"               # e.g., ssm/runs/$(date +%F)
+OUTPUT_S3_KMS_KEY_ID="${OUTPUT_S3_KMS_KEY_ID:-}"                # optional SSE-KMS
 
 # =========================
-# Helpers
-# =========================
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1"; exit 1; }; }
-need aws; need jq
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 1; }; }
+need aws; need jq; need base64
+
+[[ -f "$SCRIPT_PATH" ]] || { echo "SCRIPT_PATH not found: $SCRIPT_PATH"; exit 1; }
+
+# Read and base64-encode your script once (safe transport)
+SCRIPT_B64="$(base64 -w0 "$SCRIPT_PATH")"
+
+# Build the command that reconstructs & runs your script on the target
+# - writes /tmp/payload.sh, chmod +x, executes with optional args
+REMOTE_CMD="set -euo pipefail; echo '$SCRIPT_B64' | base64 -d > /tmp/payload.sh; chmod +x /tmp/payload.sh; sudo /bin/bash /tmp/payload.sh ${SCRIPT_ARGS}"
+
+# Globals set by assume_role()
+AK=""; SK=""; ST=""
 
 assume_role() {
   local account_id="$1"
   local sts_region="us-east-1"
-
   local creds
-  if ! creds=$(aws sts assume-role \
-      --region "$sts_region" \
-      --role-arn "arn:aws:iam::${account_id}:role/${ROLE_NAME}" \
-      --role-session-name "ssm-validate-$(date +%s)" \
-      --profile "$PROFILE" \
-      --query 'Credentials' \
-      --output json); then
-    echo "ASSUME-ROLE: FAILED account=${account_id}"
-    return 1
+  creds=$(aws sts assume-role \
+    --region "$sts_region" \
+    --role-arn "arn:aws:iam::${account_id}:role/${ROLE_NAME}" \
+    --role-session-name "ssm-fanout-$(date +%s)" \
+    --profile "$PROFILE" \
+    --query 'Credentials' \
+    --output json) || { echo "ASSUME-ROLE FAILED: $account_id"; return 1; }
+  AK="$(jq -r '.AccessKeyId'     <<<"$creds")"
+  SK="$(jq -r '.SecretAccessKey' <<<"$creds")"
+  ST="$(jq -r '.SessionToken'    <<<"$creds")"
+}
+
+# List SSM-managed instances that are Linux, Online, EC2Instance, and NOT AL2023
+list_linux_online_instances() {
+  local region="$1"
+  local next_token=""
+  local ids=()
+  while : ; do
+    local args=(
+      ssm describe-instance-information
+      --region "$region"
+      --filters "Key=PlatformTypes,Values=Linux" "Key=PingStatus,Values=Online" "Key=ResourceType,Values=EC2Instance"
+      --max-results 50
+      --output json
+    )
+    [[ -n "$next_token" ]] && args+=( --next-token "$next_token" )
+    local page
+    page=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" aws "${args[@]}")
+    mapfile -t page_ids < <(
+      jq -r '
+        .InstanceInformationList[]
+        | select( (.PlatformName != "Amazon Linux") or (.PlatformVersion | startswith("2023") | not) )
+        | .InstanceId
+      ' <<<"$page"
+    )
+    [[ ${#page_ids[@]} -gt 0 ]] && ids+=("${page_ids[@]}")
+    next_token="$(jq -r '.NextToken // empty' <<<"$page")"
+    [[ -z "$next_token" ]] && break
+  done
+  printf "%s\n" "${ids[@]}" | awk 'NF'
+}
+
+# Keep only EC2 instances that are in state "running"
+filter_running_instances() {
+  local region="$1"; shift
+  local -a in_ids=( "$@" )
+  [[ ${#in_ids[@]} -eq 0 ]] && return 0
+  local out=()
+  local chunk_size=100
+  local i=0
+  while (( i < ${#in_ids[@]} )); do
+    local chunk=( "${in_ids[@]:i:chunk_size}" )
+    local lines
+    lines=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" \
+      aws ec2 describe-instances --region "$region" --instance-ids "${chunk[@]}" \
+      --query 'Reservations[].Instances[?State.Name==`running`].[InstanceId]' \
+      --output text 2>/dev/null || true)
+    if [[ -n "$lines" ]]; then
+      while IFS= read -r id; do [[ -n "$id" ]] && out+=("$id"); done <<<"$lines"
+    fi
+    i=$(( i + chunk_size ))
+  done
+  printf "%s\n" "${out[@]}"
+}
+
+send_command_batch() {
+  local region="$1"; shift
+  local -a ids=( "$@" )
+  [[ ${#ids[@]} -eq 0 ]] && return 0
+
+  local s3_args=()
+  if [[ -n "$OUTPUT_S3_BUCKET" ]]; then
+    s3_args+=( --output-s3-bucket-name "$OUTPUT_S3_BUCKET" --output-s3-key-prefix "$OUTPUT_S3_PREFIX" )
+    [[ -n "$OUTPUT_S3_KMS_KEY_ID" ]] && s3_args+=( --output-s3-region "$region" --output-s3-encryption-kms-key-id "$OUTPUT_S3_KMS_KEY_ID" )
   fi
 
-  export AWS_ACCESS_KEY_ID
-  export AWS_SECRET_ACCESS_KEY
-  export AWS_SESSION_TOKEN
-  AWS_ACCESS_KEY_ID=$(jq -r '.AccessKeyId' <<<"$creds")
-  AWS_SECRET_ACCESS_KEY=$(jq -r '.SecretAccessKey' <<<"$creds")
-  AWS_SESSION_TOKEN=$(jq -r '.SessionToken' <<<"$creds")
-}
-
-doc_arn_for_region() {
-  local region="$1"
-  printf "arn:aws:ssm:%s:%s:document/%s" "$region" "$DOC_OWNER" "$DOC_NAME"
-}
-
-# Returns "OK" (ARN worked), "OK-NONARN" (bare name worked), or "FAIL: <aws error>"
-check_doc_visible() {
-  local region="$1"
-  local doc_arn; doc_arn="$(doc_arn_for_region "$region")"
-  : > .doc_err  # truncate
-
-  # 1) Try by ARN
-  if aws ssm describe-document --region "$region" --name "$doc_arn" \
-       --query '{Name:Name,Owner:Owner,DocumentType:DocumentType,Status:Status,Default:DefaultVersion,Latest:LatestVersion}' \
-       --output json >/dev/null 2>.doc_err; then
-    rm -f .doc_err
-    echo "OK"
-    return 0
-  fi
-
-  # 2) Try by bare name
-  if aws ssm describe-document --region "$region" --name "$DOC_NAME" \
-       --query '{Name:Name,Owner:Owner,DocumentType:DocumentType,Status:Status,Default:DefaultVersion,Latest:LatestVersion}' \
-       --output json >/dev/null 2>>.doc_err; then
-    rm -f .doc_err
-    echo "OK-NONARN"
-    return 0
-  fi
-
-  # 3) Diagnostic: show whatever matches by name/type (non-fatal)
-  aws ssm list-documents --region "$region" \
-    --filters Key=Name,Values="$DOC_NAME" Key=DocumentType,Values=Command \
-    --max-results 50 --output table 2>>.doc_err || true
-
-  local msg
-  msg=$(tr -d '\n' < .doc_err | sed 's/  \+/ /g')
-  rm -f .doc_err
-  echo "FAIL: $msg"
-  return 1
-}
-
-# Pick one Linux + Online + EC2Instance and ensure EC2 state == running
-pick_one_linux_running_instance() {
-  local region="$1"
-  local ids
-  ids=$(aws ssm describe-instance-information \
-          --region "$region" \
-          --filters "Key=PlatformTypes,Values=Linux" "Key=PingStatus,Values=Online" "Key=ResourceType,Values=EC2Instance" \
-          --max-results 50 \
-          --query 'InstanceInformationList[].InstanceId' \
-          --output text) || true
-  [[ -z "$ids" ]] && return 1
-
-  local first_running
-  first_running=$(aws ec2 describe-instances \
-                    --region "$region" \
-                    --instance-ids $ids \
-                    --query 'Reservations[].Instances[?State.Name==`running`].[InstanceId]' \
-                    --output text | head -n 1) || true
-  [[ -z "$first_running" ]] && return 1
-  printf "%s" "$first_running"
-}
-
-execute_doc_on_instance() {
-  local region="$1"
-  local instance_id="$2"
-  local doc_arn; doc_arn="$(doc_arn_for_region "$region")"
-
-  echo "$DOC_PARAMETERS" | jq empty >/dev/null 2>&1 || { echo "Invalid DOC_PARAMETERS JSON"; return 1; }
-
+  AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" \
   aws ssm send-command \
-      --region "$region" \
-      --document-name "$doc_arn" \
-      --document-version "$DOC_VERSION" \
-      --instance-ids "$instance_id" \
-      --parameters "$DOC_PARAMETERS" \
-      --comment "SSM doc validation" \
-      --max-concurrency "1" \
-      --max-errors "1" \
-      --query 'Command.CommandId' \
-      --output text
-}
-
-wait_and_summarize() {
-  local region="$1"
-  local cmd_id="$2"
-  aws ssm list-command-invocations \
     --region "$region" \
-    --command-id "$cmd_id" \
-    --details \
-    --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails,StandardOutputUrl:StandardOutputUrl,StandardErrorUrl:StandardErrorUrl}' \
-    --output table
+    --document-name "AWS-RunShellScript" \
+    --comment "Fanout script run (Linux-only, excludes AL2023, running instances only)" \
+    --parameters "commands=['${REMOTE_CMD//\'/\'\\\'\'}']" \
+    --max-concurrency "$MAX_CONCURRENCY" \
+    --max-errors "$MAX_ERRORS" \
+    --instance-ids "${ids[@]}" \
+    "${s3_args[@]}" \
+    >/dev/null
 }
 
-usage() {
-  cat <<EOF
-Usage: $(basename "$0") [--execute]
-
-Without --execute:
-  - Assumes role into each account in ACCOUNTS_FILE
-  - In each region: verifies SSM document visibility (by ARN, then by name)
-  - Prints CSV: Account,Region,AssumeRole,DocVisible,Executed,CommandId
-
-With --execute:
-  - Also finds ONE Linux + Online + running instance and executes the document on it
-  - Pass parameters via env DOC_PARAMETERS (JSON), e.g.:
-      DOC_PARAMETERS='{"commands":["echo hello from SSM","uname -a"]}'
-
-Environment overrides:
-  ROLE_NAME, PROFILE, REGIONS, ACCOUNTS_FILE,
-  DOC_OWNER, DOC_NAME, DOC_VERSION, DOC_PARAMETERS
-EOF
-}
-
-# =========================
-# Main
-# =========================
-EXECUTE=0
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then usage; exit 0; fi
-if [[ "${1:-}" == "--execute" ]]; then EXECUTE=1; fi
+echo "Account,Region,DiscoveredLinux,RunningAfterFilter,BatchesSubmitted"
 
 [[ -s "$ACCOUNTS_FILE" ]] || { echo "Accounts file '$ACCOUNTS_FILE' not found or empty"; exit 1; }
-
-echo "Account,Region,AssumeRole,DocVisible,Executed,CommandId"
 
 while IFS= read -r ACCOUNT_ID; do
   ACCOUNT_ID="$(echo "$ACCOUNT_ID" | awk '{$1=$1};1')"
@@ -179,30 +142,32 @@ while IFS= read -r ACCOUNT_ID; do
 
   if ! assume_role "$ACCOUNT_ID"; then
     for REGION in "${REGIONS[@]}"; do
-      echo "${ACCOUNT_ID},${REGION},FAIL,SKIP,SKIP,"
+      echo "${ACCOUNT_ID},${REGION},ASSUME_FAIL,0,0"
     done
     continue
   fi
 
   for REGION in "${REGIONS[@]}"; do
-    VIS=$(check_doc_visible "$REGION" || true)
-    DOC_OK="$VIS"   # "OK", "OK-NONARN", or "FAIL: <error>"
-    EXEC="NO"; CMDID=""
+    mapfile -t LINUX_IDS < <(list_linux_online_instances "$REGION")
+    total="${#LINUX_IDS[@]}"
 
-    if [[ "$EXECUTE" -eq 1 && "$DOC_OK" == OK* ]]; then
-      if inst=$(pick_one_linux_running_instance "$REGION"); then
-        if cmd=$(execute_doc_on_instance "$REGION" "$inst"); then
-          EXEC="YES"; CMDID="$cmd"
-          # Optional: print a quick status table (non-blocking)
-          wait_and_summarize "$REGION" "$CMDID" || true
-        else
-          EXEC="FAIL"
-        fi
-      else
-        EXEC="NO-LINUX-ONLINE"
-      fi
+    mapfile -t RUNNING_IDS < <(filter_running_instances "$REGION" "${LINUX_IDS[@]}")
+    running="${#RUNNING_IDS[@]}"
+
+    if (( running == 0 )); then
+      echo "${ACCOUNT_ID},${REGION},${total},0,0"
+      continue
     fi
 
-    echo "${ACCOUNT_ID},${REGION},OK,${DOC_OK},${EXEC},${CMDID}"
+    submitted=0
+    i=0
+    while (( i < running )); do
+      chunk=( "${RUNNING_IDS[@]:i:BATCH_SIZE}" )
+      send_command_batch "$REGION" "${chunk[@]}"
+      submitted=$((submitted + 1))
+      i=$((i + BATCH_SIZE))
+    done
+
+    echo "${ACCOUNT_ID},${REGION},${total},${running},${submitted}"
   done
 done < "$ACCOUNTS_FILE"
