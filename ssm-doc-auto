@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ========= CONFIG (edit or pass via env) =========
+ROLE_NAME="${ROLE_NAME:-TFC.RL.AWS.Enterprise.BootStrapAuto}"   # same style as your script
+REGIONS=(${REGIONS:-"us-east-1" "us-east-2" "us-west-1" "us-west-2"})
+ACCOUNTS_FILE="${ACCOUNTS_FILE:-accounts.txt}"                  # one account id per line, allow # comments
+
+# What to run on Linux hosts:
+DOC_NAME="${DOC_NAME:-AWS-RunShellScript}"                      # or your custom doc name
+# Separate by semicolon; quote if you include spaces. You can override via env COMMANDS="..."
+COMMANDS="${COMMANDS:-uname -a; whoami; echo 'hello from SSM'}"
+
+# Throttle knobs
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-50%}"
+MAX_ERRORS="${MAX_ERRORS:-10%}"
+BATCH_SIZE="${BATCH_SIZE:-50}"                                   # send-command lets up to 50 instance-ids per call
+
+# Optional: capture output to S3 (leave blank to skip)
+OUTPUT_S3_BUCKET="${OUTPUT_S3_BUCKET:-}"                         # e.g., my-ssm-output-bucket
+OUTPUT_S3_PREFIX="${OUTPUT_S3_PREFIX:-ssm/linux}"                # e.g., path/prefix
+OUTPUT_S3_KMS_KEY_ID="${OUTPUT_S3_KMS_KEY_ID:-}"                 # optional
+
+# ========= helpers =========
+assume_role() {
+  local account_id="$1"
+  local region_for_sts="us-east-1"   # sts is global but using a fixed region avoids endpoint surprises
+
+  # shellcheck disable=SC2155
+  local CREDS=$(aws sts assume-role \
+    --role-arn "arn:aws:iam::${account_id}:role/${ROLE_NAME}" \
+    --role-session-name "ssm-linux-$(date +%s)" \
+    --region "${region_for_sts}" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+    --output text)
+
+  AK="$(awk '{print $1}' <<<"$CREDS")"
+  SK="$(awk '{print $2}' <<<"$CREDS")"
+  ST="$(awk '{print $3}' <<<"$CREDS")"
+}
+
+# returns IDs of SSM-managed Linux instances that are Online
+list_linux_online_instances() {
+  local region="$1"
+  local next_token=""
+  local ids=()
+
+  while : ; do
+    if [[ -n "$next_token" ]]; then
+      page=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" \
+        aws ssm describe-instance-information \
+          --region "$region" \
+          --filters "Key=PlatformTypes,Values=Linux" "Key=PingStatus,Values=Online" \
+          --max-results 50 \
+          --next-token "$next_token" \
+          --output json)
+    else
+      page=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" \
+        aws ssm describe-instance-information \
+          --region "$region" \
+          --filters "Key=PlatformTypes,Values=Linux" "Key=PingStatus,Values=Online" \
+          --max-results 50 \
+          --output json)
+    fi
+
+    mapfile -t page_ids < <(jq -r '.InstanceInformationList[].InstanceId' <<<"$page")
+    [[ ${#page_ids[@]} -gt 0 ]] && ids+=("${page_ids[@]}")
+
+    next_token="$(jq -r '.NextToken // empty' <<<"$page")"
+    [[ -z "$next_token" ]] && break
+  done
+
+  printf "%s\n" "${ids[@]}" | awk 'NF'
+}
+
+send_command_batch() {
+  local region="$1"; shift
+  # rest of args: instance ids
+  local -a ids=( "$@" )
+  [[ ${#ids[@]} -eq 0 ]] && return 0
+
+  local s3_args=()
+  [[ -n "$OUTPUT_S3_BUCKET" ]] && s3_args+=( --output-s3-bucket-name "$OUTPUT_S3_BUCKET" --output-s3-key-prefix "$OUTPUT_S3_PREFIX" )
+  [[ -n "$OUTPUT_S3_KMS_KEY_ID" ]] && s3_args+=( --output-s3-region "$region" --output-s3-encryption-kms-key-id "$OUTPUT_S3_KMS_KEY_ID" )
+
+  AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_SESSION_TOKEN="$ST" \
+  aws ssm send-command \
+    --region "$region" \
+    --document-name "$DOC_NAME" \
+    --max-concurrency "$MAX_CONCURRENCY" \
+    --max-errors "$MAX_ERRORS" \
+    --comment "Linux-only run via script" \
+    --parameters "commands=['${COMMANDS//\'/\'\\\'\'}']" \
+    --instance-ids "${ids[@]}" \
+    "${s3_args[@]}"
+}
+
+# ========= main =========
+echo "Account,Region,DiscoveredLinux,SubmittedBatches"
+
+[[ -s "$ACCOUNTS_FILE" ]] || { echo "Accounts file '$ACCOUNTS_FILE' not found or empty"; exit 1; }
+
+while read -r ACCOUNT_ID; do
+  # skip blanks/comments
+  ACCOUNT_ID="$(echo "$ACCOUNT_ID" | awk '{$1=$1};1')"
+  [[ -z "$ACCOUNT_ID" || "${ACCOUNT_ID:0:1}" == "#" ]] && continue
+
+  assume_role "$ACCOUNT_ID"
+
+  for REGION in "${REGIONS[@]}"; do
+    mapfile -t LINUX_IDS < <(list_linux_online_instances "$REGION")
+    COUNT=${#LINUX_IDS[@]}
+    if (( COUNT == 0 )); then
+      echo "${ACCOUNT_ID},${REGION},0,0"
+      continue
+    fi
+
+    # Batch and send
+    submitted=0
+    i=0
+    while (( i < COUNT )); do
+      chunk=( "${LINUX_IDS[@]:i:BATCH_SIZE}" )
+      send_command_batch "$REGION" "${chunk[@]}" >/dev/null
+      submitted=$((submitted + 1))
+      i=$((i + BATCH_SIZE))
+    done
+
+    echo "${ACCOUNT_ID},${REGION},${COUNT},${submitted}"
+  done
+done < "$ACCOUNTS_FILE"
