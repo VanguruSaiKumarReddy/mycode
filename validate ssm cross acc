@@ -4,22 +4,19 @@ set -euo pipefail
 # =========================
 # Config (override via env)
 # =========================
-ROLE_NAME="${ROLE_NAME:-TFC.RL.AWS.Enterprise.BootStrapAuto}"   # role existing in each target account
-PROFILE="${PROFILE:-default}"                                   # local AWS CLI profile (only for STS call)
+ROLE_NAME="${ROLE_NAME:-TFC.RL.AWS.Enterprise.BootStrapAuto}"   # role name in each member account
+PROFILE="${PROFILE:-default}"                                   # local AWS CLI profile for STS call
 REGIONS=(${REGIONS:-"us-east-1" "us-east-2" "us-west-2"})
-ACCOUNTS_FILE="${ACCOUNTS_FILE:-accounts.txt}"                  # one account id per line (# comments ok)
+ACCOUNTS_FILE="${ACCOUNTS_FILE:-accounts.txt}"                  # one account ID per line (# comments ok)
 
-# SSM Document owner + name (shared doc)
-DOC_OWNER="${DOC_OWNER:-111111111111}"                          # <-- central account that OWNS the doc
-DOC_NAME="${DOC_NAME:-LinuxOnly-RunShell}"                      # <-- shared doc name
-DOC_VERSION="${DOC_VERSION:-\$DEFAULT}"                         # explicit number or $DEFAULT
+# Shared SSM Document details
+DOC_OWNER="${DOC_OWNER:-925514488322}"                          # <— owner account ID
+DOC_NAME="${DOC_NAME:-tfc-ami-factory-Install-EC2InstanceConnect-prod}"  # <— document name
+DOC_VERSION="${DOC_VERSION:-\$DEFAULT}"                         # explicit version number or $DEFAULT
 
-# Optional parameters for the doc (JSON string). Default is empty object.
-# Example: DOC_PARAMETERS='{"commands":["echo hi"]}'
+# Optional parameters for the doc (JSON string). Example:
+# DOC_PARAMETERS='{"commands":["echo hello","uname -a"]}'
 DOC_PARAMETERS="${DOC_PARAMETERS:-{}}"
-
-# When --execute is used, if the doc needs commands, set via DOC_PARAMETERS as above.
-# We'll pick ONE Linux + Online + running instance in the region to test.
 
 # =========================
 # Helpers
@@ -56,17 +53,45 @@ doc_arn_for_region() {
   printf "arn:aws:ssm:%s:%s:document/%s" "$region" "$DOC_OWNER" "$DOC_NAME"
 }
 
+# Returns "OK" (ARN worked), "OK-NONARN" (bare name worked), or "FAIL: <aws error>"
 check_doc_visible() {
   local region="$1"
   local doc_arn; doc_arn="$(doc_arn_for_region "$region")"
-  aws ssm describe-document --region "$region" --name "$doc_arn" \
-    --query '{Name:Name,Owner:Owner,DocumentType:DocumentType,Status:Status,Default:DefaultVersion,Latest:LatestVersion}' \
-    --output json
+  : > .doc_err  # truncate
+
+  # 1) Try by ARN
+  if aws ssm describe-document --region "$region" --name "$doc_arn" \
+       --query '{Name:Name,Owner:Owner,DocumentType:DocumentType,Status:Status,Default:DefaultVersion,Latest:LatestVersion}' \
+       --output json >/dev/null 2>.doc_err; then
+    rm -f .doc_err
+    echo "OK"
+    return 0
+  fi
+
+  # 2) Try by bare name
+  if aws ssm describe-document --region "$region" --name "$DOC_NAME" \
+       --query '{Name:Name,Owner:Owner,DocumentType:DocumentType,Status:Status,Default:DefaultVersion,Latest:LatestVersion}' \
+       --output json >/dev/null 2>>.doc_err; then
+    rm -f .doc_err
+    echo "OK-NONARN"
+    return 0
+  fi
+
+  # 3) Diagnostic: show whatever matches by name/type (non-fatal)
+  aws ssm list-documents --region "$region" \
+    --filters Key=Name,Values="$DOC_NAME" Key=DocumentType,Values=Command \
+    --max-results 50 --output table 2>>.doc_err || true
+
+  local msg
+  msg=$(tr -d '\n' < .doc_err | sed 's/  \+/ /g')
+  rm -f .doc_err
+  echo "FAIL: $msg"
+  return 1
 }
 
+# Pick one Linux + Online + EC2Instance and ensure EC2 state == running
 pick_one_linux_running_instance() {
   local region="$1"
-  # SSM-managed, Linux, Online, EC2Instance
   local ids
   ids=$(aws ssm describe-instance-information \
           --region "$region" \
@@ -74,9 +99,8 @@ pick_one_linux_running_instance() {
           --max-results 50 \
           --query 'InstanceInformationList[].InstanceId' \
           --output text) || true
-
   [[ -z "$ids" ]] && return 1
-  # Verify EC2 state is 'running' (avoid stopped/terminated)
+
   local first_running
   first_running=$(aws ec2 describe-instances \
                     --region "$region" \
@@ -92,23 +116,19 @@ execute_doc_on_instance() {
   local instance_id="$2"
   local doc_arn; doc_arn="$(doc_arn_for_region "$region")"
 
-  # Validate parameters JSON
   echo "$DOC_PARAMETERS" | jq empty >/dev/null 2>&1 || { echo "Invalid DOC_PARAMETERS JSON"; return 1; }
 
-  local cmd_id
-  cmd_id=$(aws ssm send-command \
-              --region "$region" \
-              --document-name "$doc_arn" \
-              --document-version "$DOC_VERSION" \
-              --instance-ids "$instance_id" \
-              --parameters "$DOC_PARAMETERS" \
-              --comment "SSM doc validation" \
-              --max-concurrency "1" \
-              --max-errors "1" \
-              --query 'Command.CommandId' \
-              --output text) || return 1
-
-  echo "$cmd_id"
+  aws ssm send-command \
+      --region "$region" \
+      --document-name "$doc_arn" \
+      --document-version "$DOC_VERSION" \
+      --instance-ids "$instance_id" \
+      --parameters "$DOC_PARAMETERS" \
+      --comment "SSM doc validation" \
+      --max-concurrency "1" \
+      --max-errors "1" \
+      --query 'Command.CommandId' \
+      --output text
 }
 
 wait_and_summarize() {
@@ -127,24 +147,18 @@ usage() {
 Usage: $(basename "$0") [--execute]
 
 Without --execute:
-  - Assumes role into each account from ACCOUNTS_FILE
-  - In each region: verifies SSM document visibility (by ARN)
+  - Assumes role into each account in ACCOUNTS_FILE
+  - In each region: verifies SSM document visibility (by ARN, then by name)
+  - Prints CSV: Account,Region,AssumeRole,DocVisible,Executed,CommandId
+
 With --execute:
   - Also finds ONE Linux + Online + running instance and executes the document on it
-  - Pass doc parameters via env DOC_PARAMETERS (JSON), e.g.:
-      DOC_PARAMETERS='{"commands":["echo hello from SSM"]}'
+  - Pass parameters via env DOC_PARAMETERS (JSON), e.g.:
+      DOC_PARAMETERS='{"commands":["echo hello from SSM","uname -a"]}'
 
 Environment overrides:
   ROLE_NAME, PROFILE, REGIONS, ACCOUNTS_FILE,
   DOC_OWNER, DOC_NAME, DOC_VERSION, DOC_PARAMETERS
-
-Example (list/verify only):
-  DOC_OWNER=111111111111 DOC_NAME=LinuxOnly-RunShell ./$(basename "$0")
-
-Example (execute on one instance per region/account):
-  DOC_OWNER=111111111111 DOC_NAME=AWS-RunShellScript \\
-  DOC_PARAMETERS='{"commands":["echo hello; uname -a"]}' \\
-  ./$(basename "$0") --execute
 EOF
 }
 
@@ -171,19 +185,15 @@ while IFS= read -r ACCOUNT_ID; do
   fi
 
   for REGION in "${REGIONS[@]}"; do
-    DOC_OK="OK"; EXEC="NO"; CMDID=""
+    VIS=$(check_doc_visible "$REGION" || true)
+    DOC_OK="$VIS"   # "OK", "OK-NONARN", or "FAIL: <error>"
+    EXEC="NO"; CMDID=""
 
-    # 1) doc visibility
-    if ! check_doc_visible "$REGION" >/dev/null 2>&1; then
-      DOC_OK="FAIL"
-    fi
-
-    # 2) optional execute
-    if [[ "$EXECUTE" -eq 1 && "$DOC_OK" == "OK" ]]; then
+    if [[ "$EXECUTE" -eq 1 && "$DOC_OK" == OK* ]]; then
       if inst=$(pick_one_linux_running_instance "$REGION"); then
         if cmd=$(execute_doc_on_instance "$REGION" "$inst"); then
           EXEC="YES"; CMDID="$cmd"
-          # Optional: pretty status (non-blocking)
+          # Optional: print a quick status table (non-blocking)
           wait_and_summarize "$REGION" "$CMDID" || true
         else
           EXEC="FAIL"
