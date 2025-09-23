@@ -1,0 +1,63 @@
+3. Use Cases
+
+Documents primary business and technical scenarios in which the service is expected to be used, including key benefits and outcomes.
+
+RESPONSIBLE: Requester
+
+Centralized License Management
+
+Use AWS License Manager to define license rules for Microsoft, Oracle, Red Hat, etc., ensuring that entitlements are not exceeded across AWS accounts.
+
+Integration with AWS Marketplace & BYOL
+
+Track and enforce licenses procured through AWS Marketplace as well as BYOL models.
+
+Compliance & Audit Readiness
+
+Provide auditors with centralized reporting of license consumption across AWS Organization.
+
+Hybrid Cloud Tracking
+
+Extend license tracking to on-premises workloads via Systems Manager integration.
+
+4. POC Information
+
+Documents acceptance criteria and results from Sandbox/Lab deployments to assess service usage and business alignment.
+
+RESPONSIBLE: Requester, Cloud Platform – AWS
+
+POC Scope
+
+Validate license tracking and enforcement across sandbox accounts.
+
+Test blocking of non-compliant launches (e.g., exceeding purchased SQL cores).
+
+POC INFORMATION
+
+Acceptance Criteria	Results
+In Lab environment, validate ability to create and enforce license configurations (e.g., Windows Server CALs).	Pass
+Test detection of unlicensed instances across multiple accounts in AWS Organization.	Pass
+5. Approval Scope
+
+Defines the boundaries for service approval, specifying which environments (e.g., Sandbox-Lab, Dev-Prod) the service is permitted to operate in and under what constraints.
+
+RESPONSIBLE: Cloud Governance, Cloud Platform – AWS
+
+Approval Scope
+
+Service approval for Sandbox-Lab ✅
+
+Service approval for Dev-Prod ✅
+
+AWS Allowed Resource Types
+
+EC2 Instances, RDS, Marketplace AMIs
+
+AWS Service Tiers/SKUs
+
+Not applicable
+
+AWS Accounts / Subscriptions
+
+Description	Environment	Account/Tenant	Subscription
+AWS License Manager Service	Prod	[Org Account]	Enabled
