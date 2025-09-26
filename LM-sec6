@@ -1,0 +1,111 @@
+6.1 IAM Requirements
+
+Core IAM (already listed in template):
+
+✅ Use least privilege and separation of duties.
+
+✅ Comply with root and privileged access security.
+
+✅ Follow credential lifecycle management.
+
+✅ Use MFA.
+
+✅ Use Conditional Access (Entra ID, mapped to IAM Identity Center + SSO in AWS).
+
+Service-Specific IAM Requirements for AWS License Manager:
+
+Ensure only Delegated Admin account has rights to create/manage licenses and grants.
+
+Member accounts should have read-only access to view entitlements, not create them.
+
+Enforce cross-account sharing only via AWS Organizations, not manual external principals.
+
+6.2 Data Protection
+
+Core Data Protection (template already good):
+
+✅ Encrypt all data-in-transit and at-rest (Marketplace entitlements, license configs stored in AWS backend).
+
+✅ Use CMKs for encryption where applicable.
+
+✅ Use latest TLS version for API calls.
+
+Service-Specific Data Protection Requirements for AWS License Manager:
+
+Ensure license configuration and entitlement metadata are logged only in encrypted AWS Config/CloudTrail.
+
+Marketplace subscription data must remain restricted to Delegated Admin account, not exposed directly to workloads.
+
+6.3 Threat and Vulnerability Management
+
+Core Requirements:
+
+✅ License Manager is a managed service; AWS maintains underlying patching.
+
+✅ Security logs (API calls, license grants, revokes) captured via CloudTrail → SIEM (Splunk/QRadar).
+
+✅ Use WAF for any APIs if integrated into custom portals.
+
+Service-Specific Requirements:
+
+Enable CloudTrail for all accounts to detect unauthorized grant creation.
+
+Run AWS Config + Security Hub rules to ensure grants and licenses align with enterprise security policy.
+
+Use Qualys/Tanium scans to validate endpoint agents launched from Marketplace AMIs (e.g., Zscaler, Qualys).
+
+6.4 Network Security
+
+Core Requirements:
+
+✅ Follow enterprise security architecture.
+
+✅ Use least privilege, avoid * for inbound/outbound.
+
+✅ Restrict public access.
+
+Service-Specific Requirements for License Manager:
+
+Ensure License Manager API access is limited to VPC endpoints (AWS PrivateLink), no open internet access.
+
+Enforce Service Control Policies (SCPs) to prevent member accounts from bypassing Private Marketplace.
+
+Ensure all Marketplace AMIs (e.g., Zscaler, Qualys) use controlled VPC ingress/egress with firewall rules.
+
+6.5 Configuration & Change Management
+
+Core Requirements:
+
+✅ Use TDLC framework (plan, design, build, test).
+
+✅ Deploy via Terraform modules (IaC).
+
+✅ Follow tagging standards.
+
+✅ Use approved AMIs/configurations.
+
+Service-Specific Requirements for License Manager:
+
+Manage license grants and subscriptions via Terraform or Service Catalog, not console.
+
+All Marketplace approvals must go through CCoE review + CSAP approval workflow.
+
+Maintain version control for Terraform modules that create/update grants.
+
+6.6 Logging, Monitoring, and Alerting
+
+Core Requirements:
+
+✅ CloudTrail logs all License Manager API activity.
+
+✅ Logs aggregated into Cyber Fusion Center (SIEM).
+
+✅ Enable alarms and incident response workflows.
+
+Service-Specific Requirements for License Manager:
+
+Create CloudWatch alarms for unusual activity (e.g., sudden bulk license grants, revokes).
+
+Integrate Config rules to track license configurations and entitlements drift.
+
+Periodically review Marketplace subscriptions usage vs actual deployments to detect unused/rogue licenses.
