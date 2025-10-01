@@ -1,12 +1,16 @@
-- name: "CIS 3.3.8.c | Ensure net.ipv4.tcp_syncookies=1 in /etc/sysctl.conf"
+- name: "CIS 3.3.9.c | Ensure net.ipv6.conf.default.accept_ra=0 in /etc/sysctl.conf"
   ansible.posix.sysctl:
-    name: net.ipv4.tcp_syncookies
-    value: "1"
+    name: net.ipv6.conf.default.accept_ra
+    value: "0"
     state: present
     sysctl_file: /etc/sysctl.conf
     reload: yes
-  tags: ['cis_3_3_8_c','cis','network','ipv4']
+  tags: ['cis_3_3_9_c','cis','network','ipv6']
 
 
-sysctl -n net.ipv4.tcp_syncookies
-grep -E '^\s*net\.ipv4\.tcp_syncookies\s*=\s*1\s*$' /etc/sysctl.conf
+
+# Runtime
+sysctl -n net.ipv6.conf.default.accept_ra
+
+# Persisted config
+grep -E '^\s*net\.ipv6\.conf\.default\.accept_ra\s*=\s*0\s*$' /etc/sysctl.conf
