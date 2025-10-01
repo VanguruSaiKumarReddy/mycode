@@ -24,3 +24,10 @@
     job: "/usr/sbin/aide --check"
     state: present
   tags: ['cis_1_3_2_b','cis']
+
+
+
+- name: move_aide_db
+  command: mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+  when: ansible_check_mode | default(false) | ternary(false, true)
+
