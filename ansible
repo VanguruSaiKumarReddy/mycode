@@ -1,20 +1,41 @@
-- name: "CIS 1.3.3 | Ensure audit tools are monitored in AIDE config"
-  lineinfile:
-    path: /etc/aide.conf
-    regexp: "^/usr/sbin/{{ item.tool }}"
-    line: "/usr/sbin/{{ item.tool }} p+i+n+u+g+s+b+acl+xattrs+sha512"
-    create: yes
+# --- CIS 1.3.2.b — chrony pool present in /etc/chrony.conf ---
+
+- name: "CIS 1.3.2.b | Ensure chrony is installed"
+  package:
+    name: chrony
     state: present
-  loop:
-    - { tool: "auditctl" }
-    - { tool: "auditd" }
-    - { tool: "ausearch" }
-    - { tool: "aureport" }
-    - { tool: "augenrules" }
-    - { tool: "autrace" }
-    - { tool: "audispd" }
-  tags: ['cis_1_3_3','cis']
+  tags: ['cis_1_3_2_b','cis','chrony']
+
+- name: "CIS 1.3.2.b | Ensure a 'pool' line exists in /etc/chrony.conf"
+  lineinfile:
+    path: /etc/chrony.conf
+    regexp: '^\s*pool\s+'
+    line: "pool {{ cis_chrony_pool | default('2.rhel.pool.ntp.org iburst') }}"
+    create: yes
+    mode: '0644'
+  notify: restart_chronyd
+  tags: ['cis_1_3_2_b','cis','chrony']
+
+- name: "CIS 1.3.2.b | Enable & start chronyd"
+  service:
+    name: chronyd
+    enabled: true
+    state: started
+  tags: ['cis_1_3_2_b','cis','chrony']
 
 
 
-grep -E '/usr/sbin/(auditctl|auditd|ausearch|aureport|augenrules|autrace|audispd)' /etc/aide.conf
+
+- name: restart_chronyd
+  service:
+    name: chronyd
+    state: restarted
+
+
+
+# Show the pool line (control expects any non-empty match)
+grep -E '^\s*pool\s+.+$' /etc/chrony.conf
+
+# Confirm chronyd is running and sources look healthy
+systemctl is-active chronyd
+chronyc -n sources -v
