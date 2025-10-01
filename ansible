@@ -1,0 +1,26 @@
+# --- CIS 1.3.2.b — Schedule AIDE via root crontab (/var/spool/cron/root) ---
+
+- name: "CIS 1.3.2.b | Ensure AIDE package is installed"
+  package:
+    name: aide
+    state: present
+  tags: ['cis_1_3_2_b','cis']
+
+- name: "CIS 1.3.2.b | Initialize AIDE database if missing"
+  command: /usr/sbin/aide --init
+  args:
+    creates: /var/lib/aide/aide.db.gz
+  register: aide_init
+  changed_when: aide_init.rc == 0
+  notify: move_aide_db
+  tags: ['cis_1_3_2_b','cis']
+
+- name: "CIS 1.3.2.b | Schedule daily AIDE integrity check in root crontab"
+  cron:
+    name: "Daily AIDE integrity check"
+    user: root
+    minute: "{{ cis_aide_minute | default('0') }}"
+    hour:   "{{ cis_aide_hour   | default('5') }}"
+    job: "/usr/sbin/aide --check"
+    state: present
+  tags: ['cis_1_3_2_b','cis']
