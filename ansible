@@ -1,12 +1,12 @@
-- name: "CIS 4.2.3 | Secure /etc/cron.allow (root:root 0600)"
+- name: "CIS 5.1.9.a | Secure /etc/at.allow (root:root 0600)"
   file:
-    path: /etc/cron.allow
+    path: /etc/at.allow
     owner: root
     group: root
     mode: '0600'
     state: file
-  tags: ['cis_4_2_3','cis','cron']
+  tags: ['cis_5_1_9_a','cis','at']
 
 
-stat -c "%U:%G %a %n" /etc/cron.allow
-# Expect: root:root 600 /etc/cron.allow
+stat -c "%U:%G %a %n" /etc/at.allow
+# Expect: root:root 600 /etc/at.allow
