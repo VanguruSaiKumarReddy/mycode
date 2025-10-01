@@ -1,17 +1,19 @@
-- name: "CIS 4.2.2.4 | Ensure journald storage is persistent"
-  lineinfile:
-    path: /etc/systemd/journald.conf
-    regexp: '^\s*Storage='
-    line: 'Storage=persistent'
-    create: yes
-    mode: '0644'
-  notify: restart_systemd_journald
-  tags: ['cis_4_2_2_4','cis','journald']
+- name: "CIS 4.2.3 | Ensure correct ownership and permissions on critical log files"
+  file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/log/wtmp,     owner: root, group: utmp,  mode: '0664' }
+    - { path: /var/log/btmp,     owner: root, group: utmp,  mode: '0600' }
+    - { path: /var/log/lastlog,  owner: root, group: utmp,  mode: '0664' }
+    - { path: /var/log/secure,   owner: root, group: adm,   mode: '0600' }
+    - { path: /var/log/messages, owner: root, group: adm,   mode: '0640' }
+    - { path: /var/log/syslog,   owner: root, group: adm,   mode: '0640' }
+  when: ansible_facts['os_family'] == "RedHat"
+  tags: ['cis_4_2_3','cis','logs']
 
 
 
-# Check config file
-grep -E '^\s*Storage=persistent' /etc/systemd/journald.conf
-
-# Confirm journald is persisting logs
-systemctl show systemd-journald | grep Storage
+stat -c "%n %U:%G %a" /var/log/wtmp /var/log/btmp /var/log/lastlog /var/log/secure /var/log/messages
