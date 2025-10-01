@@ -1,23 +1,15 @@
-- name: "CIS 3.3.7.a | Ensure net.ipv4.conf.default.rp_filter=1"
-  copy:
-    dest: /etc/sysctl.d/99-cis-rp_filter.conf
-    content: |
-      # CIS Control 3.3.7.a - Reverse Path Filtering (default)
-      net.ipv4.conf.default.rp_filter = 1
-    owner: root
-    group: root
-    mode: '0644'
-  notify: reload_sysctl
-  tags: ['cis_3_3_7_a','cis','network','ipv4']
+- name: "CIS 3.3.7.c | Ensure net.ipv4.conf.all.rp_filter=1 in /etc/sysctl.conf"
+  ansible.posix.sysctl:
+    name: net.ipv4.conf.all.rp_filter
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.conf
+    reload: yes
+  tags: ['cis_3_3_7_c','cis','network','ipv4']
 
 
-- name: reload_sysctl
-  command: sysctl --system
+# Runtime value must be 1
+sysctl -n net.ipv4.conf.all.rp_filter
 
-
-
-# Check running value
-sysctl -n net.ipv4.conf.default.rp_filter
-
-# Check which file enforces it
-grep net.ipv4.conf.default.rp_filter /etc/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf
+# Persisted value in the file this control inspects
+grep -E '^\s*net\.ipv4\.conf\.all\.rp_filter\s*=\s*1\s*$' /etc/sysctl.conf
