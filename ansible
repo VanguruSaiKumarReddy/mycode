@@ -1,15 +1,15 @@
-- name: "CIS 3.3.1.h | Ensure net.ipv4.conf.all.accept_source_route=0 in /etc/sysctl.conf"
+- name: "CIS 3.3.2.e | Ensure net.ipv6.conf.default.accept_redirects=0 in /etc/sysctl.conf"
   ansible.posix.sysctl:
-    name: net.ipv4.conf.all.accept_source_route
+    name: net.ipv6.conf.default.accept_redirects
     value: "0"
     state: present
     sysctl_file: /etc/sysctl.conf
     reload: yes
-  tags: ['cis_3_3_1_h','cis','network','ipv4']
+  tags: ['cis_3_3_2_e','cis','network','ipv6']
 
 
-# Runtime value must be 0
-sysctl -n net.ipv4.conf.all.accept_source_route
+# Runtime check
+sysctl -n net.ipv6.conf.default.accept_redirects
 
-# Persisted value in the file the control checks
-grep -E '^\s*net\.ipv4\.conf\.all\.accept_source_route\s*=\s*0\s*$' /etc/sysctl.conf
+# Persisted config check
+grep -E '^\s*net\.ipv6\.conf\.default\.accept_redirects\s*=\s*0\s*$' /etc/sysctl.conf
