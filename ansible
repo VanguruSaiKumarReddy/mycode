@@ -1,15 +1,12 @@
-- name: "CIS 3.3.7.c | Ensure net.ipv4.conf.default.rp_filter=1 in /etc/sysctl.conf"
+- name: "CIS 3.3.8.c | Ensure net.ipv4.tcp_syncookies=1 in /etc/sysctl.conf"
   ansible.posix.sysctl:
-    name: net.ipv4.conf.default.rp_filter
+    name: net.ipv4.tcp_syncookies
     value: "1"
     state: present
     sysctl_file: /etc/sysctl.conf
     reload: yes
-  tags: ['cis_3_3_7_c','cis','network','ipv4']
+  tags: ['cis_3_3_8_c','cis','network','ipv4']
 
 
-# Runtime check
-sysctl -n net.ipv4.conf.default.rp_filter
-
-# Persisted config check
-grep -E '^\s*net\.ipv4\.conf\.default\.rp_filter\s*=\s*1\s*$' /etc/sysctl.conf
+sysctl -n net.ipv4.tcp_syncookies
+grep -E '^\s*net\.ipv4\.tcp_syncookies\s*=\s*1\s*$' /etc/sysctl.conf
