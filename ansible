@@ -8,6 +8,7 @@
   tags: ['cis_3_3_1_f','cis','network','ipv6']
 
 
+
 # Runtime value
 sysctl -n net.ipv6.conf.all.accept_source_route
 
