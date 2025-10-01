@@ -1,13 +1,15 @@
-# --- CIS 1.4.2.b — Secure permissions on grub.cfg ---
+- name: "CIS 3.2.1.c | Ensure net.ipv4.ip_forward=0 in /etc/sysctl.conf"
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "0"
+    state: present
+    sysctl_file: /etc/sysctl.conf   # control checks this file
+    reload: yes                     # apply immediately
+  tags: ['cis_3_2_1_c','cis','network']
 
-- name: "CIS 1.4.2.b | Ensure grub.cfg has correct ownership"
-  file:
-    path: /boot/grub2/grub.cfg
-    owner: root
-    group: root
-    mode: '0600'
-  tags: ['cis_1_4_2_b','cis','grub']
 
 
-# Permissions should be 600, owned by root:root
-stat -c "%U:%G %a %n" /boot/grub2/grub.cfg
+# Active value must be 0
+sysctl -n net.ipv4.ip_forward
+# Persisted value in the file the control inspects
+grep -E '^\s*net\.ipv4\.ip_forward\s*=\s*0\s*$' /etc/sysctl.conf
