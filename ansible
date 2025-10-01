@@ -1,15 +1,15 @@
-- name: "CIS 3.3.5.c | Ensure net.ipv4.icmp_echo_ignore_broadcasts=1 in /etc/sysctl.conf"
+- name: "CIS 3.3.6.b | Ensure net.ipv4.icmp_ignore_bogus_error_responses=1 in /etc/sysctl.conf"
   ansible.posix.sysctl:
-    name: net.ipv4.icmp_echo_ignore_broadcasts
+    name: net.ipv4.icmp_ignore_bogus_error_responses
     value: "1"
     state: present
     sysctl_file: /etc/sysctl.conf
     reload: yes
-  tags: ['cis_3_3_5_c','cis','network','ipv4']
+  tags: ['cis_3_3_6_b','cis','network','ipv4']
 
 
-# Runtime check
-sysctl -n net.ipv4.icmp_echo_ignore_broadcasts
+# Runtime value
+sysctl -n net.ipv4.icmp_ignore_bogus_error_responses
 
-# Persisted config check
-grep -E '^\s*net\.ipv4\.icmp_echo_ignore_broadcasts\s*=\s*1\s*$' /etc/sysctl.conf
+# Persisted config
+grep -E '^\s*net\.ipv4\.icmp_ignore_bogus_error_responses\s*=\s*1\s*$' /etc/sysctl.conf
