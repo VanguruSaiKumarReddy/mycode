@@ -1,15 +1,16 @@
-- name: "CIS 3.2.1.c | Ensure net.ipv4.ip_forward=0 in /etc/sysctl.conf"
+- name: "CIS 3.2.2.e | Ensure net.ipv4.conf.default.send_redirects=0 in /etc/sysctl.conf"
   ansible.posix.sysctl:
-    name: net.ipv4.ip_forward
+    name: net.ipv4.conf.default.send_redirects
     value: "0"
     state: present
-    sysctl_file: /etc/sysctl.conf   # control checks this file
-    reload: yes                     # apply immediately
-  tags: ['cis_3_2_1_c','cis','network']
+    sysctl_file: /etc/sysctl.conf
+    reload: yes
+  tags: ['cis_3_2_2_e','cis','network']
 
 
 
-# Active value must be 0
-sysctl -n net.ipv4.ip_forward
-# Persisted value in the file the control inspects
-grep -E '^\s*net\.ipv4\.ip_forward\s*=\s*0\s*$' /etc/sysctl.conf
+# Check the current running value
+sysctl -n net.ipv4.conf.default.send_redirects
+
+# Check what’s persisted in /etc/sysctl.conf
+grep -E '^\s*net\.ipv4\.conf\.default\.send_redirects\s*=\s*0\s*$' /etc/sysctl.conf
