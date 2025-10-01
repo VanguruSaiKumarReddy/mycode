@@ -1,12 +1,15 @@
-- name: "CIS 5.1.9.a | Secure /etc/at.allow (root:root 0600)"
-  file:
-    path: /etc/at.allow
-    owner: root
-    group: root
-    mode: '0600'
-    state: file
-  tags: ['cis_5_1_9_a','cis','at']
+- name: "CIS 3.3.4.c | Ensure net.ipv4.conf.default.log_martians=1 in /etc/sysctl.conf"
+  ansible.posix.sysctl:
+    name: net.ipv4.conf.default.log_martians
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.conf
+    reload: yes
+  tags: ['cis_3_3_4_c','cis','network','ipv4']
 
 
-stat -c "%U:%G %a %n" /etc/at.allow
-# Expect: root:root 600 /etc/at.allow
+# Runtime check
+sysctl -n net.ipv4.conf.default.log_martians
+
+# Persisted config check
+grep -E '^\s*net\.ipv4\.conf\.default\.log_martians\s*=\s*1\s*$' /etc/sysctl.conf
