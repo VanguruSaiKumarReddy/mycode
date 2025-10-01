@@ -1,19 +1,12 @@
-- name: "CIS 4.2.3 | Ensure correct ownership and permissions on critical log files"
+- name: "CIS 4.2.3 | Secure /etc/cron.allow (root:root 0600)"
   file:
-    path: "{{ item.path }}"
-    owner: "{{ item.owner | default('root') }}"
-    group: "{{ item.group | default('root') }}"
-    mode: "{{ item.mode }}"
-  loop:
-    - { path: /var/log/wtmp,     owner: root, group: utmp,  mode: '0664' }
-    - { path: /var/log/btmp,     owner: root, group: utmp,  mode: '0600' }
-    - { path: /var/log/lastlog,  owner: root, group: utmp,  mode: '0664' }
-    - { path: /var/log/secure,   owner: root, group: adm,   mode: '0600' }
-    - { path: /var/log/messages, owner: root, group: adm,   mode: '0640' }
-    - { path: /var/log/syslog,   owner: root, group: adm,   mode: '0640' }
-  when: ansible_facts['os_family'] == "RedHat"
-  tags: ['cis_4_2_3','cis','logs']
+    path: /etc/cron.allow
+    owner: root
+    group: root
+    mode: '0600'
+    state: file
+  tags: ['cis_4_2_3','cis','cron']
 
 
-
-stat -c "%n %U:%G %a" /var/log/wtmp /var/log/btmp /var/log/lastlog /var/log/secure /var/log/messages
+stat -c "%U:%G %a %n" /etc/cron.allow
+# Expect: root:root 600 /etc/cron.allow
