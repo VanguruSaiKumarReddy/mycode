@@ -1,38 +1,102 @@
-# Ensure the wheel group exists (usually already present)
-- name: "CIS 5.3.7 | Ensure wheel group exists"
-  group:
-    name: wheel
+- name: "5.4.2.a | Ensure authselect is present"
+  package:
+    name: authselect
     state: present
-  tags: ['cis_5_3_7','cis','pam','su']
+  tags: ['cis_5_4_2_a','cis','pam','faillock']
 
-# Enforce 'auth required pam_wheel.so use_uid' in /etc/pam.d/su
-- name: "CIS 5.3.7 | Require wheel for su (pam_wheel.so use_uid)"
+# Figure out the current profile (e.g., sssd, winbind, minimal, etc.)
+- name: "5.4.2.a | Detect current authselect profile"
+  command: authselect current
+  register: authselect_cur
+  changed_when: false
+  failed_when: false
+  tags: ['cis_5_4_2_a']
+
+# If not managed by authselect (rare), we'll fall back to direct edits
+- set_fact:
+    authselect_managed: "{{ 'Profile ID:' in (authselect_cur.stdout | default('')) }}"
+  tags: ['cis_5_4_2_a']
+
+# Parse the current profile ID (e.g., sssd)
+- name: "5.4.2.a | Extract profile id"
+  set_fact:
+    authselect_profile_id: "{{ (authselect_cur.stdout | regex_search('Profile ID:\\s*(\\S+)', '\\1')) | default('sssd', true) }}"
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+# Create a custom profile if not already present
+- name: "5.4.2.a | Ensure custom authselect profile exists"
+  command: "authselect create-profile cis-custom -b {{ authselect_profile_id }}"
+  args:
+    creates: "/etc/authselect/custom/cis-custom"
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+# Select the custom profile with faillock enabled
+- name: "5.4.2.a | Select custom profile with faillock"
+  command: "authselect select custom/cis-custom with-faillock --force"
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+# Enforce required pam_faillock line + required options in password-auth of the custom profile
+- name: "5.4.2.a | Enforce pam_faillock in password-auth (custom profile)"
   lineinfile:
-    path: /etc/pam.d/su
-    regexp: '^\s*auth\s+required\s+pam_wheel\.so(\s+.*)?$'
-    line: 'auth            required        pam_wheel.so use_uid'
+    path: /etc/authselect/custom/cis-custom/password-auth
+    regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
+    line: 'auth        required      pam_faillock.so deny=5 unlock_time=900'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_3_7','cis','pam','su']
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
 
-# (Optional) Place our line right after pam_rootok if the file has that stanza
-- name: "CIS 5.3.7 | Position rule after pam_rootok (if present)"
-  blockinfile:
-    path: /etc/pam.d/su
-    marker: "# {mark} CIS 5.3.7"
-    insertafter: '^auth\s+sufficient\s+pam_rootok\.so'
-    block: |
-      auth            required        pam_wheel.so use_uid
-  when: "'pam_rootok.so' in lookup('ansible.builtin.file', '/etc/pam.d/su') | default('')"
-  tags: ['cis_5_3_7','cis','pam','su']
+# Also ensure the preauth/authfail lines exist (RHEL layout); keep options consistent
+- name: "5.4.2.a | Ensure preauth line present (idempotent)"
+  replace:
+    path: /etc/authselect/custom/cis-custom/password-auth
+    regexp: '^\s*auth\s+required\s+pam_faillock\.so\s+preauth.*$'
+    replace: 'auth        required      pam_faillock.so preauth silent deny=5 unlock_time=900'
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+- name: "5.4.2.a | Ensure authfail line present (idempotent)"
+  replace:
+    path: /etc/authselect/custom/cis-custom/password-auth
+    regexp: '^\s*auth\s+\[default=die\]\s+pam_faillock\.so\s+authfail.*$'
+    replace: 'auth        [default=die] pam_faillock.so authfail deny=5 unlock_time=900'
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+# Apply the profile changes to regenerate /etc/pam.d/password-auth
+- name: "5.4.2.a | Apply authselect changes"
+  command: authselect apply-changes
+  when: authselect_managed
+  tags: ['cis_5_4_2_a']
+
+# --------- Fallback path when host isn't using authselect (very rare on RHEL 9) ---------
+- block:
+    - name: "5.4.2.a | Fallback: ensure pam_faillock line exists in /etc/pam.d/password-auth"
+      lineinfile:
+        path: /etc/pam.d/password-auth
+        regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
+        line: 'auth        required      pam_faillock.so deny=5 unlock_time=900'
+        create: yes
+        mode: '0644'
+        backup: yes
+  when: not authselect_managed
+  tags: ['cis_5_4_2_a']
 
 
-# 1) Check the PAM line
-grep -E '^\s*auth\s+required\s+pam_wheel\.so\s+use_uid\s*$' /etc/pam.d/su
 
-# 2) Confirm your user is (or isn’t) in wheel
-id -nG $USER
 
-# 3) Behavior check (non-wheel user should fail)
-su -   # should be denied for users not in wheel
+
+
+# 1) Confirm authselect profile and that faillock option is active
+authselect current
+
+# 2) The file must include a line beginning with 'auth required pam_faillock.so'
+grep -E '^\s*auth\s+required\s+pam_faillock\.so' /etc/pam.d/password-auth
+
+# 3) Verify required options are present (deny=5 and unlock_time >= 900)
+grep -E 'deny=5' /etc/pam.d/password-auth
+grep -E 'unlock_time=(9[0-9][0-9]|[1-9][0-9]{3,})' /etc/pam.d/password-auth
