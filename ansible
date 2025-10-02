@@ -1,51 +1,36 @@
-# Ensure sudo is present
-- name: "CIS 5.3.3 | Install sudo"
+# Ensure sudo present
+- name: "CIS 5.3.6.a | Install sudo"
   package:
     name: sudo
     state: present
-  tags: ['cis_5_3_3','cis','sudo']
+  tags: ['cis_5_3_6_a','cis','sudo']
 
-# Make sure /etc/sudoers includes /etc/sudoers.d
-- name: "CIS 5.3.3 | Ensure /etc/sudoers.d is included"
+# Ensure /etc/sudoers loads /etc/sudoers.d (validated with visudo)
+- name: "CIS 5.3.6.a | Ensure /etc/sudoers includes /etc/sudoers.d"
   lineinfile:
     path: /etc/sudoers
     regexp: '^\s*#?\s*includedir\s+/etc/sudoers\.d\s*$'
     line: '#includedir /etc/sudoers.d'
     state: present
     validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_3','cis','sudo']
+  tags: ['cis_5_3_6_a','cis','sudo']
 
-# Create the log file with tight perms (not strictly required by the control, but safe)
-- name: "CIS 5.3.3 | Ensure sudo logfile exists with secure perms"
-  file:
-    path: "{{ cis_sudo_logfile | default('/var/log/sudo.log') }}"
-    state: touch
-    owner: root
-    group: root
-    mode: '0600'
-  tags: ['cis_5_3_3','cis','sudo']
-
-# Configure sudo to log to that file via a drop-in
-- name: "CIS 5.3.3 | Configure Defaults logfile in sudoers.d"
+# Enforce a finite timeout (default 5 minutes; must be 0–900 per CIS regex)
+- name: "CIS 5.3.6.a | Set sudo authentication timeout"
   copy:
-    dest: /etc/sudoers.d/99-cis-sudo-logfile
+    dest: /etc/sudoers.d/99-cis-timestamp_timeout
     owner: root
     group: root
     mode: '0440'
     content: |
-      Defaults logfile={{ cis_sudo_logfile | default('/var/log/sudo.log') }}
+      Defaults timestamp_timeout={{ cis_sudo_timeout | default(5) }}
     validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_3','cis','sudo']
+  tags: ['cis_5_3_6_a','cis','sudo']
 
 
 
+# Confirm directive exists and matches the allowed range 0–900
+grep -R --line-number -E '^\s*Defaults\s+timestamp_timeout=(0|[1-9][0-9]?|[1-8][0-9]{2}|900)$' /etc/sudoers /etc/sudoers.d
 
-# 1) Satisfy the control's regex (presence anywhere in sudoers or sudoers.d)
-grep -R --line-number -E '^\s*Defaults\s+logfile\s*=\s*\S+\s*$' /etc/sudoers /etc/sudoers.d
-
-# 2) Check sudoers syntax
+# Validate sudoers syntax
 visudo -c
-
-# 3) (Optional) confirm logging works
-sudo -l >/dev/null 2>&1
-tail -n1 /var/log/sudo.log
