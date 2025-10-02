@@ -1,12 +1,12 @@
-- name: "5.6.3.a | Ensure TMOUT is set to 600 seconds in /etc/bashrc"
+- name: "5.6.3.b | Ensure TMOUT is set to 600 seconds in /etc/profile"
   lineinfile:
-    path: /etc/bashrc
+    path: /etc/profile
     regexp: '^\s*TMOUT='
     line: 'TMOUT=600'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_6_3_a','cis','bash','tmout']
+  tags: ['cis_5_6_3_b','cis','profile','tmout']
 
 
-grep -E '^\s*TMOUT=' /etc/bashrc
+grep -E '^\s*TMOUT=' /etc/profile
