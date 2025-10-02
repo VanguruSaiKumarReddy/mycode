@@ -1,12 +1,12 @@
-- name: "5.5.1.h | Ensure pwquality ucredit is set to -1"
+- name: "5.6.3.a | Ensure TMOUT is set to 600 seconds in /etc/bashrc"
   lineinfile:
-    path: /etc/security/pwquality.conf
-    regexp: '^\s*ucredit\s*='
-    line: 'ucredit = -1'
+    path: /etc/bashrc
+    regexp: '^\s*TMOUT='
+    line: 'TMOUT=600'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_5_1_h','cis','pwquality','password']
+  tags: ['cis_5_6_3_a','cis','bash','tmout']
 
 
-grep -E '^\s*ucredit\s*=' /etc/security/pwquality.conf
+grep -E '^\s*TMOUT=' /etc/bashrc
