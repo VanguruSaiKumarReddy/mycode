@@ -1,13 +1,15 @@
-- name: "5.4.2.b | Ensure pam_faillock is configured in system-auth"
+- name: "5.4.2.a | Ensure pam_faillock is configured in password-auth"
   lineinfile:
-    path: /etc/pam.d/system-auth
+    path: /etc/pam.d/password-auth
     regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
     line: "auth        required      pam_faillock.so deny=5 unlock_time=900"
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_4_2_b','pam','faillock']
+  tags: ['cis_5_4_2_a','pam','faillock']
 
 
 
-grep -E '^\s*auth\s+required\s+pam_faillock\.so' /etc/pam.d/system-auth
+grep -E '^\s*auth\s+required\s+pam_faillock\.so' /etc/pam.d/password-auth
+grep -E 'deny=5' /etc/pam.d/password-auth
+grep -E 'unlock_time=(9[0-9][0-9]|[1-9][0-9]{3,})' /etc/pam.d/password-auth
