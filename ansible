@@ -1,10 +1,20 @@
+---
+# CIS 5.4.2.a — Ensure pam_faillock required with deny=5 and unlock_time>=900 in password-auth
+
+# Tunables (override in group_vars/host_vars/defaults as needed)
+- vars:
+    cis_faillock_deny: 5              # must be 5 for this control
+    cis_faillock_unlock_time: 900     # >= 900 per control
+    cis_authselect_fallback_base: "minimal"   # used if current base can't be parsed
+
+# Ensure packages we’ll call exist
 - name: "5.4.2.a | Ensure authselect is present"
   package:
     name: authselect
     state: present
   tags: ['cis_5_4_2_a','cis','pam','faillock']
 
-# Figure out the current profile (e.g., sssd, winbind, minimal, etc.)
+# Detect whether PAM is managed by authselect (RHEL 8/9 default)
 - name: "5.4.2.a | Detect current authselect profile"
   command: authselect current
   register: authselect_cur
@@ -12,91 +22,102 @@
   failed_when: false
   tags: ['cis_5_4_2_a']
 
-# If not managed by authselect (rare), we'll fall back to direct edits
-- set_fact:
+- name: "5.4.2.a | Determine if authselect manages PAM"
+  set_fact:
     authselect_managed: "{{ 'Profile ID:' in (authselect_cur.stdout | default('')) }}"
   tags: ['cis_5_4_2_a']
 
-# Parse the current profile ID (e.g., sssd)
-- name: "5.4.2.a | Extract profile id"
+- name: "5.4.2.a | Extract current profile id (or fallback)"
   set_fact:
-    authselect_profile_id: "{{ (authselect_cur.stdout | regex_search('Profile ID:\\s*(\\S+)', '\\1')) | default('sssd', true) }}"
+    authselect_profile_id: >-
+      {{
+        (authselect_cur.stdout | default('') | regex_search('Profile ID:\\s*(\\S+)', '\\1'))
+        | default(cis_authselect_fallback_base, true)
+      }}
   when: authselect_managed
   tags: ['cis_5_4_2_a']
 
-# Create a custom profile if not already present
-- name: "5.4.2.a | Ensure custom authselect profile exists"
-  command: "authselect create-profile cis-custom -b {{ authselect_profile_id }}"
-  args:
-    creates: "/etc/authselect/custom/cis-custom"
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-# Select the custom profile with faillock enabled
-- name: "5.4.2.a | Select custom profile with faillock"
-  command: "authselect select custom/cis-custom with-faillock --force"
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-# Enforce required pam_faillock line + required options in password-auth of the custom profile
-- name: "5.4.2.a | Enforce pam_faillock in password-auth (custom profile)"
-  lineinfile:
-    path: /etc/authselect/custom/cis-custom/password-auth
-    regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
-    line: 'auth        required      pam_faillock.so deny=5 unlock_time=900'
-    create: yes
-    mode: '0644'
-    backup: yes
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-# Also ensure the preauth/authfail lines exist (RHEL layout); keep options consistent
-- name: "5.4.2.a | Ensure preauth line present (idempotent)"
-  replace:
-    path: /etc/authselect/custom/cis-custom/password-auth
-    regexp: '^\s*auth\s+required\s+pam_faillock\.so\s+preauth.*$'
-    replace: 'auth        required      pam_faillock.so preauth silent deny=5 unlock_time=900'
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-- name: "5.4.2.a | Ensure authfail line present (idempotent)"
-  replace:
-    path: /etc/authselect/custom/cis-custom/password-auth
-    regexp: '^\s*auth\s+\[default=die\]\s+pam_faillock\.so\s+authfail.*$'
-    replace: 'auth        [default=die] pam_faillock.so authfail deny=5 unlock_time=900'
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-# Apply the profile changes to regenerate /etc/pam.d/password-auth
-- name: "5.4.2.a | Apply authselect changes"
-  command: authselect apply-changes
-  when: authselect_managed
-  tags: ['cis_5_4_2_a']
-
-# --------- Fallback path when host isn't using authselect (very rare on RHEL 9) ---------
+# ---------------------- Authselect-managed path ----------------------
 - block:
-    - name: "5.4.2.a | Fallback: ensure pam_faillock line exists in /etc/pam.d/password-auth"
+    - name: "5.4.2.a | Create custom authselect profile if missing"
+      command: "authselect create-profile cis-custom -b {{ authselect_profile_id }}"
+      args:
+        creates: "/etc/authselect/custom/cis-custom"
+      register: create_prof
+      changed_when: create_prof.rc == 0
+
+    - name: "5.4.2.a | Select custom profile with faillock feature"
+      # with-faillock ensures faillock hooks are included
+      command: "authselect select custom/cis-custom with-faillock --force"
+      register: select_prof
+      changed_when: select_prof.rc == 0
+
+    # Enforce the specific lines/options in the custom profile’s password-auth.
+    # These lines are what your scanner looks for in /etc/pam.d/password-auth after apply-changes.
+    - name: "5.4.2.a | Ensure 'auth required pam_faillock.so' (required line)"
+      lineinfile:
+        path: /etc/authselect/custom/cis-custom/password-auth
+        regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
+        line: "auth        required      pam_faillock.so deny={{ cis_faillock_deny }} unlock_time={{ cis_faillock_unlock_time }}"
+        create: yes
+        mode: '0644'
+
+    - name: "5.4.2.a | Ensure preauth line present (idempotent)"
+      replace:
+        path: /etc/authselect/custom/cis-custom/password-auth
+        regexp: '^\s*auth\s+required\s+pam_faillock\.so\s+preauth.*$'
+        replace: "auth        required      pam_faillock.so preauth silent deny={{ cis_faillock_deny }} unlock_time={{ cis_faillock_unlock_time }}"
+      ignore_errors: true
+
+    - name: "5.4.2.a | Ensure authfail line present (idempotent)"
+      replace:
+        path: /etc/authselect/custom/cis-custom/password-auth
+        regexp: '^\s*auth\s+\[default=die\]\s+pam_faillock\.so\s+authfail.*$'
+        replace: "auth        [default=die] pam_faillock.so authfail deny={{ cis_faillock_deny }} unlock_time={{ cis_faillock_unlock_time }}"
+      ignore_errors: true
+
+    - name: "5.4.2.a | Apply authselect changes (regenerate /etc/pam.d/password-auth)"
+      command: authselect apply-changes
+      changed_when: false
+  when: authselect_managed
+  tags: ['cis_5_4_2_a','cis','pam','faillock']
+
+# ---------------------- Fallback path (no authselect) ----------------------
+- block:
+    - name: "5.4.2.a | Fallback: ensure faillock options in password-auth"
       lineinfile:
         path: /etc/pam.d/password-auth
         regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
-        line: 'auth        required      pam_faillock.so deny=5 unlock_time=900'
+        line: "auth        required      pam_faillock.so deny={{ cis_faillock_deny }} unlock_time={{ cis_faillock_unlock_time }}"
         create: yes
         mode: '0644'
         backup: yes
+
+    # On RHEL 9+, central config is supported — helps future consistency
+    - name: "5.4.2.a | Fallback: set /etc/security/faillock.conf"
+      blockinfile:
+        path: /etc/security/faillock.conf
+        create: yes
+        mode: '0600'
+        block: |
+          deny = {{ cis_faillock_deny }}
+          unlock_time = {{ cis_faillock_unlock_time }}
   when: not authselect_managed
-  tags: ['cis_5_4_2_a']
+  tags: ['cis_5_4_2_a','cis','pam','faillock']
 
 
 
 
+# tasks/section_5/main.yml  (snippet)
+- import_tasks: 5_4_2_a_faillock.yml
 
 
-# 1) Confirm authselect profile and that faillock option is active
+
+# If using authselect:
 authselect current
+# Must show "with-faillock" and custom/cis-custom selected
 
-# 2) The file must include a line beginning with 'auth required pam_faillock.so'
+# The scanner requirement:
 grep -E '^\s*auth\s+required\s+pam_faillock\.so' /etc/pam.d/password-auth
-
-# 3) Verify required options are present (deny=5 and unlock_time >= 900)
 grep -E 'deny=5' /etc/pam.d/password-auth
 grep -E 'unlock_time=(9[0-9][0-9]|[1-9][0-9]{3,})' /etc/pam.d/password-auth
