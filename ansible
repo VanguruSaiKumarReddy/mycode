@@ -1,16 +1,17 @@
-- name: "CIS 3.3.9.d | Ensure net.ipv6.conf.all.accept_ra=0 in /etc/sysctl.conf"
-  ansible.posix.sysctl:
-    name: net.ipv6.conf.all.accept_ra
-    value: "0"
-    state: present
-    sysctl_file: /etc/sysctl.conf
-    reload: yes
-  tags: ['cis_3_3_9_d','cis','network','ipv6']
+- name: "CIS 3.4.1.2.c | Unmask firewalld service"
+  command: systemctl unmask firewalld
+  args:
+    warn: false
+  changed_when: false
+  tags: ['cis_3_4_1_2_c','cis','firewall']
+
+- name: "CIS 3.4.1.2.c | Enable and start firewalld"
+  service:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: ['cis_3_4_1_2_c','cis','firewall']
 
 
-
-# Runtime value must be 0
-sysctl -n net.ipv6.conf.all.accept_ra
-
-# Persisted value in the file this control inspects
-grep -E '^\s*net\.ipv6\.conf\.all\.accept_ra\s*=\s*0\s*$' /etc/sysctl.conf
+systemctl is-enabled firewalld
+systemctl is-active firewalld
