@@ -1,36 +1,38 @@
-# Ensure sudo present
-- name: "CIS 5.3.6.a | Install sudo"
-  package:
-    name: sudo
+# Ensure the wheel group exists (usually already present)
+- name: "CIS 5.3.7 | Ensure wheel group exists"
+  group:
+    name: wheel
     state: present
-  tags: ['cis_5_3_6_a','cis','sudo']
+  tags: ['cis_5_3_7','cis','pam','su']
 
-# Ensure /etc/sudoers loads /etc/sudoers.d (validated with visudo)
-- name: "CIS 5.3.6.a | Ensure /etc/sudoers includes /etc/sudoers.d"
+# Enforce 'auth required pam_wheel.so use_uid' in /etc/pam.d/su
+- name: "CIS 5.3.7 | Require wheel for su (pam_wheel.so use_uid)"
   lineinfile:
-    path: /etc/sudoers
-    regexp: '^\s*#?\s*includedir\s+/etc/sudoers\.d\s*$'
-    line: '#includedir /etc/sudoers.d'
-    state: present
-    validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_6_a','cis','sudo']
+    path: /etc/pam.d/su
+    regexp: '^\s*auth\s+required\s+pam_wheel\.so(\s+.*)?$'
+    line: 'auth            required        pam_wheel.so use_uid'
+    create: yes
+    mode: '0644'
+    backup: yes
+  tags: ['cis_5_3_7','cis','pam','su']
 
-# Enforce a finite timeout (default 5 minutes; must be 0–900 per CIS regex)
-- name: "CIS 5.3.6.a | Set sudo authentication timeout"
-  copy:
-    dest: /etc/sudoers.d/99-cis-timestamp_timeout
-    owner: root
-    group: root
-    mode: '0440'
-    content: |
-      Defaults timestamp_timeout={{ cis_sudo_timeout | default(5) }}
-    validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_6_a','cis','sudo']
+# (Optional) Place our line right after pam_rootok if the file has that stanza
+- name: "CIS 5.3.7 | Position rule after pam_rootok (if present)"
+  blockinfile:
+    path: /etc/pam.d/su
+    marker: "# {mark} CIS 5.3.7"
+    insertafter: '^auth\s+sufficient\s+pam_rootok\.so'
+    block: |
+      auth            required        pam_wheel.so use_uid
+  when: "'pam_rootok.so' in lookup('ansible.builtin.file', '/etc/pam.d/su') | default('')"
+  tags: ['cis_5_3_7','cis','pam','su']
 
 
+# 1) Check the PAM line
+grep -E '^\s*auth\s+required\s+pam_wheel\.so\s+use_uid\s*$' /etc/pam.d/su
 
-# Confirm directive exists and matches the allowed range 0–900
-grep -R --line-number -E '^\s*Defaults\s+timestamp_timeout=(0|[1-9][0-9]?|[1-8][0-9]{2}|900)$' /etc/sudoers /etc/sudoers.d
+# 2) Confirm your user is (or isn’t) in wheel
+id -nG $USER
 
-# Validate sudoers syntax
-visudo -c
+# 3) Behavior check (non-wheel user should fail)
+su -   # should be denied for users not in wheel
