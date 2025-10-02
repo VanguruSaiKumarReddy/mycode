@@ -1,17 +1,54 @@
-- name: "CIS 3.4.1.2.c | Unmask firewalld service"
-  command: systemctl unmask firewalld
-  args:
-    warn: false
-  changed_when: false
-  tags: ['cis_3_4_1_2_c','cis','firewall']
+# Ensure sudo is present
+- name: "CIS 5.3.2 | Install sudo"
+  package:
+    name: sudo
+    state: present
+  tags: ['cis_5_3_2','cis','sudo']
 
-- name: "CIS 3.4.1.2.c | Enable and start firewalld"
-  service:
-    name: firewalld
-    state: started
-    enabled: true
-  tags: ['cis_3_4_1_2_c','cis','firewall']
+# Make sure /etc/sudoers includes the sudoers.d dir
+- name: "CIS 5.3.2 | Ensure sudo includes /etc/sudoers.d"
+  lineinfile:
+    path: /etc/sudoers
+    regexp: '^\s*#?\s*includedir\s+/etc/sudoers\.d\s*$'
+    line: '#includedir /etc/sudoers.d'
+    state: present
+    validate: '/usr/sbin/visudo -cf %s'
+  tags: ['cis_5_3_2','cis','sudo']
+
+# Provide the setting via a drop-in (last wins, so use 99-*)
+- name: "CIS 5.3.2 | Enforce Defaults use_pty"
+  copy:
+    dest: /etc/sudoers.d/99-cis-use_pty
+    owner: root
+    group: root
+    mode: '0440'
+    content: |
+      Defaults use_pty
+    validate: '/usr/sbin/visudo -cf %s'
+  tags: ['cis_5_3_2','cis','sudo']
+
+# Optional: remove any explicit negation that might exist
+- name: "CIS 5.3.2 | Ensure '!use_pty' is not set anywhere"
+  replace:
+    path: "{{ item }}"
+    regexp: '^\s*Defaults\s+!use_pty\s*$'
+    replace: ''
+  loop:
+    - /etc/sudoers
+    - "{{ lookup('ansible.builtin.pipe', 'ls -1 /etc/sudoers.d 2>/dev/null || true') | default('', true) | split('\n') | map('regex_replace','^(.*)$','/etc/sudoers.d/\\1') | select('match','/etc/sudoers.d/.+') | list }}"
+  when: item is match('/etc/sudoers|/etc/sudoers.d/.+')
+  ignore_errors: true
+  tags: ['cis_5_3_2','cis','sudo']
 
 
-systemctl is-enabled firewalld
-systemctl is-active firewalld
+
+
+
+# Check that the directive exists
+grep -R --line-number -E '^\s*Defaults\s+use_pty\s*$' /etc/sudoers /etc/sudoers.d
+
+# Validate overall sudoers syntax
+visudo -c
+
+# (Optional) confirm there is no negation present
+grep -R --line-number -E '^\s*Defaults\s+!use_pty\b' /etc/sudoers /etc/sudoers.d || echo "no negation"
