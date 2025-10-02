@@ -1,15 +1,12 @@
-- name: "5.4.2.a | Ensure pam_faillock is configured in password-auth"
+- name: "5.5.1.c | Ensure pwquality minlen is set to 14 or more"
   lineinfile:
-    path: /etc/pam.d/password-auth
-    regexp: '^\s*auth\s+required\s+pam_faillock\.so\b'
-    line: "auth        required      pam_faillock.so deny=5 unlock_time=900"
+    path: /etc/security/pwquality.conf
+    regexp: '^\s*minlen\s*='
+    line: 'minlen = 14'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_4_2_a','pam','faillock']
+  tags: ['cis_5_5_1_c','cis','pwquality','password']
 
 
-
-grep -E '^\s*auth\s+required\s+pam_faillock\.so' /etc/pam.d/password-auth
-grep -E 'deny=5' /etc/pam.d/password-auth
-grep -E 'unlock_time=(9[0-9][0-9]|[1-9][0-9]{3,})' /etc/pam.d/password-auth
+grep -E '^\s*minlen\s*=' /etc/security/pwquality.conf
