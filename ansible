@@ -1,12 +1,12 @@
-- name: "5.5.1.c | Ensure pwquality minlen is set to 14 or more"
+- name: "5.5.1.c | Ensure pwquality minclass is set to 4"
   lineinfile:
     path: /etc/security/pwquality.conf
-    regexp: '^\s*minlen\s*='
-    line: 'minlen = 14'
+    regexp: '^\s*minclass\s*='
+    line: 'minclass = 4'
     create: yes
     mode: '0644'
     backup: yes
   tags: ['cis_5_5_1_c','cis','pwquality','password']
 
 
-grep -E '^\s*minlen\s*=' /etc/security/pwquality.conf
+grep -E '^\s*minclass\s*=' /etc/security/pwquality.conf
