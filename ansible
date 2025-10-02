@@ -1,12 +1,12 @@
-- name: "5.5.1.g | Ensure pwquality lcredit is set to -1"
+- name: "5.5.1.h | Ensure pwquality ucredit is set to -1"
   lineinfile:
     path: /etc/security/pwquality.conf
-    regexp: '^\s*lcredit\s*='
-    line: 'lcredit = -1'
+    regexp: '^\s*ucredit\s*='
+    line: 'ucredit = -1'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_5_1_g','cis','pwquality','password']
+  tags: ['cis_5_5_1_h','cis','pwquality','password']
 
 
-grep -E '^\s*lcredit\s*=' /etc/security/pwquality.conf
+grep -E '^\s*ucredit\s*=' /etc/security/pwquality.conf
