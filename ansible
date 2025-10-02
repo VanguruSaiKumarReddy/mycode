@@ -1,54 +1,51 @@
 # Ensure sudo is present
-- name: "CIS 5.3.2 | Install sudo"
+- name: "CIS 5.3.3 | Install sudo"
   package:
     name: sudo
     state: present
-  tags: ['cis_5_3_2','cis','sudo']
+  tags: ['cis_5_3_3','cis','sudo']
 
-# Make sure /etc/sudoers includes the sudoers.d dir
-- name: "CIS 5.3.2 | Ensure sudo includes /etc/sudoers.d"
+# Make sure /etc/sudoers includes /etc/sudoers.d
+- name: "CIS 5.3.3 | Ensure /etc/sudoers.d is included"
   lineinfile:
     path: /etc/sudoers
     regexp: '^\s*#?\s*includedir\s+/etc/sudoers\.d\s*$'
     line: '#includedir /etc/sudoers.d'
     state: present
     validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_2','cis','sudo']
+  tags: ['cis_5_3_3','cis','sudo']
 
-# Provide the setting via a drop-in (last wins, so use 99-*)
-- name: "CIS 5.3.2 | Enforce Defaults use_pty"
+# Create the log file with tight perms (not strictly required by the control, but safe)
+- name: "CIS 5.3.3 | Ensure sudo logfile exists with secure perms"
+  file:
+    path: "{{ cis_sudo_logfile | default('/var/log/sudo.log') }}"
+    state: touch
+    owner: root
+    group: root
+    mode: '0600'
+  tags: ['cis_5_3_3','cis','sudo']
+
+# Configure sudo to log to that file via a drop-in
+- name: "CIS 5.3.3 | Configure Defaults logfile in sudoers.d"
   copy:
-    dest: /etc/sudoers.d/99-cis-use_pty
+    dest: /etc/sudoers.d/99-cis-sudo-logfile
     owner: root
     group: root
     mode: '0440'
     content: |
-      Defaults use_pty
+      Defaults logfile={{ cis_sudo_logfile | default('/var/log/sudo.log') }}
     validate: '/usr/sbin/visudo -cf %s'
-  tags: ['cis_5_3_2','cis','sudo']
-
-# Optional: remove any explicit negation that might exist
-- name: "CIS 5.3.2 | Ensure '!use_pty' is not set anywhere"
-  replace:
-    path: "{{ item }}"
-    regexp: '^\s*Defaults\s+!use_pty\s*$'
-    replace: ''
-  loop:
-    - /etc/sudoers
-    - "{{ lookup('ansible.builtin.pipe', 'ls -1 /etc/sudoers.d 2>/dev/null || true') | default('', true) | split('\n') | map('regex_replace','^(.*)$','/etc/sudoers.d/\\1') | select('match','/etc/sudoers.d/.+') | list }}"
-  when: item is match('/etc/sudoers|/etc/sudoers.d/.+')
-  ignore_errors: true
-  tags: ['cis_5_3_2','cis','sudo']
+  tags: ['cis_5_3_3','cis','sudo']
 
 
 
 
+# 1) Satisfy the control's regex (presence anywhere in sudoers or sudoers.d)
+grep -R --line-number -E '^\s*Defaults\s+logfile\s*=\s*\S+\s*$' /etc/sudoers /etc/sudoers.d
 
-# Check that the directive exists
-grep -R --line-number -E '^\s*Defaults\s+use_pty\s*$' /etc/sudoers /etc/sudoers.d
-
-# Validate overall sudoers syntax
+# 2) Check sudoers syntax
 visudo -c
 
-# (Optional) confirm there is no negation present
-grep -R --line-number -E '^\s*Defaults\s+!use_pty\b' /etc/sudoers /etc/sudoers.d || echo "no negation"
+# 3) (Optional) confirm logging works
+sudo -l >/dev/null 2>&1
+tail -n1 /var/log/sudo.log
