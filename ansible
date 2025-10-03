@@ -1,28 +1,58 @@
-# --- CIS 5.5.3.a — Enforce password history in /etc/pam.d/password-auth ---
+# --- CIS 3.3.7.a hard pass: eliminate rp_filter=2 anywhere and enforce =1 ---
 
-# Add pam_pwhistory with remember=5 (≥5) before pam_unix.so
-- name: "5.5.3.a | Add pam_pwhistory remember=5 to password-auth"
-  lineinfile:
-    path: /etc/pam.d/password-auth
-    regexp: '^\s*password\s+requisite\s+pam_pwhistory\.so\b'
-    line: 'password    requisite     pam_pwhistory.so use_authtok remember=5'
-    insertbefore: '^\s*password\s+sufficient\s+pam_unix\.so\b'
-    create: yes
-    mode: '0644'
-    backup: yes
-  tags: ['cis_5_5_3_a','pam','password','history']
-
-# Optional: ensure pam_unix.so does NOT also carry remember=...
-- name: "5.5.3.a | Remove remember= from pam_unix.so (if present)"
+- name: "3.3.7.a | Set rp_filter=1 in vendor defaults (50-default.conf)"
   replace:
-    path: /etc/pam.d/password-auth
-    regexp: '^(\s*password\s+sufficient\s+pam_unix\.so\b.*)\s+remember=\d+(\s.*|$)'
-    replace: '\1\2'
-  tags: ['cis_5_5_3_a','pam','password','history']
+    path: /usr/lib/sysctl.d/50-default.conf
+    regexp: '^(\\s*net\\.ipv4\\.conf\\.(all|default)\\.rp_filter\\s*=\\s*)\\d+\\s*$'
+    replace: '\11'
+  register: rp_vendor1
+  ignore_errors: true   # file exists on most RHEL9, but be tolerant
+  tags: ['cis_3_3_7_a','sysctl']
+
+- name: "3.3.7.a | Set rp_filter=1 in vendor redhat file (50-redhat.conf)"
+  replace:
+    path: /usr/lib/sysctl.d/50-redhat.conf
+    regexp: '^(\\s*net\\.ipv4\\.conf\\.(all|default)\\.rp_filter\\s*=\\s*)\\d+\\s*$'
+    replace: '\11'
+  register: rp_vendor2
+  ignore_errors: true
+  tags: ['cis_3_3_7_a','sysctl']
+
+- name: "3.3.7.a | Ensure high-priority override in /etc/sysctl.d"
+  copy:
+    dest: /etc/sysctl.d/99-cis-rp_filter.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # CIS 3.3.7 - Reverse Path Filtering
+      net.ipv4.conf.default.rp_filter = 1
+      net.ipv4.conf.all.rp_filter     = 1
+  tags: ['cis_3_3_7_a','sysctl']
+
+- name: "3.3.7.a | Apply sysctl changes"
+  command: sysctl --system
+  changed_when: false
+  tags: ['cis_3_3_7_a','sysctl']
+
+# (Optional) fail fast if any rp_filter=2 remains in loaded dirs
+- name: "3.3.7.a | Assert no rp_filter=2 remains in sysctl.d trees"
+  shell: |
+    grep -R --line-number -E 'net\.ipv4\.conf\.(all|default)\.rp_filter\s*=\s*2' /etc/sysctl.* /run/sysctl.* /usr/lib/sysctl.* || true
+  register: rp_grep
+  changed_when: false
+  failed_when: rp_grep.stdout | length > 0
+  tags: ['cis_3_3_7_a','sysctl']
 
 
-# Must show pam_pwhistory with remember >= 5
-grep -E '^\s*password\s+requisite\s+pam_pwhistory\.so\b.*\bremember=([5-9]|[1-9][0-9]+)\b' /etc/pam.d/password-auth
 
-# Sanity: pam_unix.so line should exist (without remember= if you used the optional task)
-grep -E '^\s*password\s+sufficient\s+pam_unix\.so\b' /etc/pam.d/password-auth
+
+# No file should set rp_filter=2 anymore
+grep -R -nE 'net\.ipv4\.conf\.(all|default)\.rp_filter\s*=\s*2' /etc/sysctl.* /run/sysctl.* /usr/lib/sysctl.* || echo "OK"
+
+# Effective values
+sysctl -n net.ipv4.conf.default.rp_filter
+sysctl -n net.ipv4.conf.all.rp_filter
+
+# Per-interface (should all be 1)
+for f in /proc/sys/net/ipv4/conf/*/rp_filter; do printf "%s: %s\n" "$f" "$(cat "$f")"; done
