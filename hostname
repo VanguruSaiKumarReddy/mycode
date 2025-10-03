@@ -3,28 +3,44 @@ set -euo pipefail
 
 echo "[INFO] Detecting instance identity from IMDS..."
 
-# Get region and instance-id from instance metadata
-REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | cut -d\" -f4)
-IID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+# Try IMDSv2 token
+TOKEN=$(curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" \
+         -H "X-aws-ec2-metadata-token-ttl-seconds: 300" || true)
+
+if [[ -n "$TOKEN" ]]; then
+  echo "[DEBUG] Using IMDSv2 with token"
+  IID=$(curl -s -m 2 -H "X-aws-ec2-metadata-token: $TOKEN" \
+         http://169.254.169.254/latest/meta-data/instance-id || true)
+  REGION=$(curl -s -m 2 -H "X-aws-ec2-metadata-token: $TOKEN" \
+           http://169.254.169.254/latest/dynamic/instance-identity/document \
+           | grep region | cut -d\" -f4 || true)
+else
+  echo "[DEBUG] Falling back to IMDSv1"
+  IID=$(curl -s -m 2 http://169.254.169.254/latest/meta-data/instance-id || true)
+  REGION=$(curl -s -m 2 http://169.254.169.254/latest/dynamic/instance-identity/document \
+           | grep region | cut -d\" -f4 || true)
+fi
+
+if [[ -z "${IID:-}" || -z "${REGION:-}" ]]; then
+  echo "[ERROR] Could not get instance-id or region from IMDS"
+  exit 1
+fi
 
 echo "[INFO] Instance ID: $IID"
 echo "[INFO] Region: $REGION"
 
 echo "[INFO] Fetching Name tag via AWS CLI..."
-
 TAG_VALUE=$(aws ec2 describe-tags \
   --region "$REGION" \
   --filters "Name=resource-id,Values=$IID" "Name=key,Values=Name" \
-  --query "Tags[0].Value" \
-  --output text 2>/dev/null || true)
+  --query "Tags[0].Value" --output text 2>/dev/null || true)
 
-# Handle common cases
 if [[ "$TAG_VALUE" == "None" || -z "$TAG_VALUE" ]]; then
   echo "[ERROR] Could not retrieve 'Name' tag."
   echo "        Possible reasons:"
   echo "        - The instance does not have a Name tag."
-  echo "        - The IAM role attached to the instance does not allow ec2:DescribeTags."
-  exit 1
+  echo "        - The IAM role lacks ec2:DescribeTags."
+  exit 2
 fi
 
 echo "[SUCCESS] Found Name tag: $TAG_VALUE"
