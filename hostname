@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Grab region and instance-id from IMDS
+echo "[INFO] Detecting instance identity from IMDS..."
+
+# Get region and instance-id from instance metadata
 REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | cut -d\" -f4)
 IID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 
-# Fetch the Name tag using AWS CLI
-aws ec2 describe-tags \
+echo "[INFO] Instance ID: $IID"
+echo "[INFO] Region: $REGION"
+
+echo "[INFO] Fetching Name tag via AWS CLI..."
+
+TAG_VALUE=$(aws ec2 describe-tags \
   --region "$REGION" \
   --filters "Name=resource-id,Values=$IID" "Name=key,Values=Name" \
   --query "Tags[0].Value" \
-  --output text
+  --output text 2>/dev/null || true)
+
+# Handle common cases
+if [[ "$TAG_VALUE" == "None" || -z "$TAG_VALUE" ]]; then
+  echo "[ERROR] Could not retrieve 'Name' tag."
+  echo "        Possible reasons:"
+  echo "        - The instance does not have a Name tag."
+  echo "        - The IAM role attached to the instance does not allow ec2:DescribeTags."
+  exit 1
+fi
+
+echo "[SUCCESS] Found Name tag: $TAG_VALUE"
