@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "[INFO] Detecting instance identity from IMDS..."
 
-# Try IMDSv2 token
+# --- IMDSv2 preferred ---
 TOKEN=$(curl -s -m 2 -X PUT "http://169.254.169.254/latest/api/token" \
          -H "X-aws-ec2-metadata-token-ttl-seconds: 300" || true)
 
@@ -29,6 +29,7 @@ fi
 echo "[INFO] Instance ID: $IID"
 echo "[INFO] Region: $REGION"
 
+# --- Try to fetch Name tag ---
 echo "[INFO] Fetching Name tag via AWS CLI..."
 TAG_VALUE=$(aws ec2 describe-tags \
   --region "$REGION" \
@@ -36,11 +37,51 @@ TAG_VALUE=$(aws ec2 describe-tags \
   --query "Tags[0].Value" --output text 2>/dev/null || true)
 
 if [[ "$TAG_VALUE" == "None" || -z "$TAG_VALUE" ]]; then
-  echo "[ERROR] Could not retrieve 'Name' tag."
-  echo "        Possible reasons:"
-  echo "        - The instance does not have a Name tag."
-  echo "        - The IAM role lacks ec2:DescribeTags."
-  exit 2
+  echo "[WARN] No 'Name' tag found — using Instance ID as hostname."
+  HOSTNAME_NEW="$IID"
+else
+  echo "[SUCCESS] Found Name tag: $TAG_VALUE"
+  HOSTNAME_NEW="$TAG_VALUE"
 fi
 
-echo "[SUCCESS] Found Name tag: $TAG_VALUE"
+# --- Sanitize hostname (must be RFC-952/1123 safe) ---
+sanitize_hostname() {
+  local raw="$1" s
+  s="$(echo -n "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/[ _]+/-/g')"
+  s="$(echo -n "$s" | sed -E 's/[^a-z0-9-]+/-/g')"
+  s="$(echo -n "$s" | sed -E 's/^-+//; s/-+$//')"
+  s="$(echo -n "$s" | sed -E 's/-{2,}/-/g')"
+  s="${s:0:63}"
+  [[ -z "$s" ]] && s="ec2-host"
+  [[ "$s" =~ ^- ]] && s="ec2${s}"
+  [[ "$s" =~ -$ ]] && s="${s%-}"
+  echo -n "$s"
+}
+
+HOSTNAME_NEW=$(sanitize_hostname "$HOSTNAME_NEW")
+
+# --- Apply hostname ---
+CURRENT=$(hostname -s || true)
+if [[ "$CURRENT" == "$HOSTNAME_NEW" ]]; then
+  echo "[INFO] Hostname already set to $HOSTNAME_NEW — no change needed."
+  exit 0
+fi
+
+echo "[INFO] Setting hostname to: $HOSTNAME_NEW"
+if command -v hostnamectl >/dev/null 2>&1; then
+  hostnamectl set-hostname "$HOSTNAME_NEW"
+else
+  hostname "$HOSTNAME_NEW" || true
+fi
+
+# Update /etc/hostname
+echo "$HOSTNAME_NEW" > /etc/hostname
+
+# Update /etc/hosts
+if grep -q "$CURRENT" /etc/hosts; then
+  sed -i "s/$CURRENT/$HOSTNAME_NEW/g" /etc/hosts
+else
+  echo "127.0.0.1   $HOSTNAME_NEW" >> /etc/hosts
+fi
+
+echo "[DONE] Hostname updated. New hostname: $(hostname -f || hostname -s)"
