@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Supported: Amazon Linux 2 / 2023, Ubuntu 22.04 / 24.04, RHEL 9
+# Behavior:
+# - Pulls Tag "Name" (override with TAG_KEY env var, e.g., TAG_KEY=MyTag)
+# - Prefers IMDSv2 instance tags (if enabled), falls back to AWS CLI (if present + IAM ec2:DescribeTags)
+# - Sanitizes to RFC-952/1123; sets via hostnamectl; updates /etc/hostname and /etc/hosts idempotently.
+
+TAG_KEY="${TAG_KEY:-Name}"
+
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "This script must run as root (use sudo)." >&2
+    exit 1
+  fi
+}
+
+log() { echo "[hostname-sync] $*"; }
+
+imds_v2_token() {
+  curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true
+}
+
+imds_get() {
+  local path="$1"
+  if [[ -n "${IMDS_TOKEN:-}" ]]; then
+    curl -sS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "http://169.254.169.254/${path}"
+  else
+    curl -sS "http://169.254.169.254/${path}"
+  fi
+}
+
+sanitize_hostname() {
+  # Lowercase, spaces/underscores -> hyphen, remove invalids, trim ends, enforce <=63 chars
+  local raw="$1"
+  local s
+  s="$(echo -n "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/[ _]+/-/g')"
+  s="$(echo -n "$s" | sed -E 's/[^a-z0-9-]+/-/g')"
+  s="$(echo -n "$s" | sed -E 's/^-+//; s/-+$//')"
+  s="$(echo -n "$s" | sed -E 's/-{2,}/-/g')"
+  s="${s:0:63}"
+  [[ -z "$s" ]] && s="ec2-host"
+  [[ "$s" =~ ^- ]] && s="ec2${s}"
+  [[ "$s" =~ -$ ]] && s="${s%-}"
+  echo -n "$s"
+}
+
+detect_distro() {
+  . /etc/os-release
+  ID="${ID:-}"
+  VERSION_ID="${VERSION_ID:-}"
+  case "$ID:$VERSION_ID" in
+    amzn:2|amzn:2023) DISTRO="amazon" ;;
+    ubuntu:22.04|ubuntu:24.04) DISTRO="ubuntu" ;;
+    rhel:9*|redhat:9*|rocky:9*|almalinux:9*) DISTRO="rhel" ;;
+    *)
+      # Try ID_LIKE for variants
+      case "${ID_LIKE:-}" in
+        *rhel*|*fedora*) DISTRO="rhel" ;;
+        *debian*) DISTRO="ubuntu" ;;
+        *) echo "Unsupported distro $ID $VERSION_ID"; exit 90 ;;
+      esac
+    ;;
+  esac
+}
+
+update_hosts() {
+  local new="$1"
+  local hosts="/etc/hosts"
+
+  # Choose loopback map style per family
+  local loop="127.0.0.1"
+  [[ "$DISTRO" == "ubuntu" ]] && loop="127.0.1.1"
+
+  touch "$hosts"
+  # Remove any prior managed lines
+  sed -i -E '/# managed by hostname-sync/d' "$hosts"
+  sed -i -E "/127\.0\.[01]\.1[[:space:]]+[a-z0-9-]+[[:space:]]+# managed by hostname-sync/d" "$hosts"
+
+  # Add current mapping
+  echo "$loop   $new # managed by hostname-sync" >> "$hosts"
+
+  # Ensure localhost exists
+  grep -qE '(^|[[:space:]])localhost([[:space:]]|$)' "$hosts" || echo "127.0.0.1   localhost" >> "$hosts"
+}
+
+apply_hostname() {
+  local new="$1"
+  if command -v hostnamectl >/dev/null 2>&1; then
+    if [[ "$(hostname -s)" != "$new" ]]; then
+      hostnamectl set-hostname "$new"
+    fi
+  else
+    # All target distros use systemd, but keep a fallback
+    hostname "$new" || true
+  fi
+  echo "$new" > /etc/hostname
+  update_hosts "$new"
+}
+
+main() {
+  need_root
+  detect_distro
+  IMDS_TOKEN="$(imds_v2_token || true)"
+  INSTANCE_ID="$(imds_get 'latest/meta-data/instance-id')"
+  REGION="$(imds_get 'latest/dynamic/instance-identity/document' | awk -F\" '/region/ {print $4}')"
+  [[ -z "$INSTANCE_ID" || -z "$REGION" ]] && { echo "Could not get instance identity from IMDS"; exit 1; }
+
+  # Prefer IMDS instance tags (must be enabled)
+  INSTANCE_NAME=""
+  if imds_get "latest/meta-data/tags/instance/" >/dev/null 2>&1; then
+    if imds_get "latest/meta-data/tags/instance/${TAG_KEY}" >/dev/null 2>&1; then
+      INSTANCE_NAME="$(imds_get "latest/meta-data/tags/instance/${TAG_KEY}")"
+      log "Fetched tag '${TAG_KEY}' from IMDS."
+    fi
+  fi
+
+  # Fallback: AWS CLI if present & role permits
+  if [[ -z "$INSTANCE_NAME" ]] && command -v aws >/dev/null 2>&1; then
+    INSTANCE_NAME="$(aws ec2 describe-tags \
+      --region "$REGION" \
+      --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=${TAG_KEY}" \
+      --query "Tags[0].Value" --output text 2>/dev/null || true)"
+    [[ "$INSTANCE_NAME" == "None" ]] && INSTANCE_NAME=""
+    [[ -n "$INSTANCE_NAME" ]] && log "Fetched tag '${TAG_KEY}' via AWS CLI."
+  fi
+
+  if [[ -z "$INSTANCE_NAME" ]]; then
+    echo "ERROR: Could not retrieve tag '${TAG_KEY}'. Enable IMDS tags or ensure CLI + ec2:DescribeTags." >&2
+    exit 2
+  fi
+
+  NEW_HOSTNAME="$(sanitize_hostname "$INSTANCE_NAME")"
+  [[ -z "$NEW_HOSTNAME" ]] && { echo "Sanitized hostname empty"; exit 3; }
+
+  CUR="$(hostname -s || true)"
+  if [[ "$CUR" == "$NEW_HOSTNAME" ]]; then
+    log "No change needed. Hostname already '$NEW_HOSTNAME'."
+    exit 0
+  fi
+
+  apply_hostname "$NEW_HOSTNAME"
+  log "Final hostname: $(hostname -f || hostname -s)"
+}
+
+main "$@"
