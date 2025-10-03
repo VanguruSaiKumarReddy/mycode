@@ -1,29 +1,28 @@
-# --- CIS 5.5.3.b — Enforce password history in /etc/pam.d/system-auth ---
+# --- CIS 5.5.3.a — Enforce password history in /etc/pam.d/password-auth ---
 
-# Ensure pwhistory is present with remember=5 and proper ordering (before pam_unix)
-- name: "5.5.3.b | Add pam_pwhistory remember=5 to system-auth"
+# Add pam_pwhistory with remember=5 (≥5) before pam_unix.so
+- name: "5.5.3.a | Add pam_pwhistory remember=5 to password-auth"
   lineinfile:
-    path: /etc/pam.d/system-auth
+    path: /etc/pam.d/password-auth
     regexp: '^\s*password\s+requisite\s+pam_pwhistory\.so\b'
     line: 'password    requisite     pam_pwhistory.so use_authtok remember=5'
     insertbefore: '^\s*password\s+sufficient\s+pam_unix\.so\b'
     create: yes
     mode: '0644'
     backup: yes
-  tags: ['cis_5_5_3_b','pam','password','history']
+  tags: ['cis_5_5_3_a','pam','password','history']
 
-# Optional: if pam_unix.so already has remember=..., strip it so pwhistory is authoritative
-- name: "5.5.3.b | Remove remember= from pam_unix.so (if present)"
+# Optional: ensure pam_unix.so does NOT also carry remember=...
+- name: "5.5.3.a | Remove remember= from pam_unix.so (if present)"
   replace:
-    path: /etc/pam.d/system-auth
+    path: /etc/pam.d/password-auth
     regexp: '^(\s*password\s+sufficient\s+pam_unix\.so\b.*)\s+remember=\d+(\s.*|$)'
     replace: '\1\2'
-  tags: ['cis_5_5_3_b','pam','password','history']
+  tags: ['cis_5_5_3_a','pam','password','history']
 
 
+# Must show pam_pwhistory with remember >= 5
+grep -E '^\s*password\s+requisite\s+pam_pwhistory\.so\b.*\bremember=([5-9]|[1-9][0-9]+)\b' /etc/pam.d/password-auth
 
-# Show the pwhistory line with remember=5 in system-auth
-grep -E '^\s*password\s+requisite\s+pam_pwhistory\.so\b.*\bremember=([5-9]|[1-9][0-9]+)\b' /etc/pam.d/system-auth
-
-# Ensure pam_unix.so does not also carry remember= (optional sanity)
-grep -E '^\s*password\s+sufficient\s+pam_unix\.so\b' /etc/pam.d/system-auth
+# Sanity: pam_unix.so line should exist (without remember= if you used the optional task)
+grep -E '^\s*password\s+sufficient\s+pam_unix\.so\b' /etc/pam.d/password-auth
