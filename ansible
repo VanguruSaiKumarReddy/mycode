@@ -1,13 +1,29 @@
-- name: "3.3.7.a | Ensure rp_filter=1 in 50-default.conf"
+- name: "3.3.7.a | Force default.rp_filter=1 in 50-default.conf"
   replace:
     path: /usr/lib/sysctl.d/50-default.conf
-    regexp: '^(\\s*net\\.ipv4\\.conf\\.(all|default)\\.rp_filter\\s*=\\s*)\\d+'
-    replace: '\11'
-  backup: yes
+    regexp: '^(\s*net\.ipv4\.conf\.default\.rp_filter\s*=\s*)\d+'
+    replace: '\\g<1>1'
   tags: ['cis_3_3_7_a','sysctl']
 
+- name: "3.3.7.c | Force all.rp_filter=1 in 50-default.conf"
+  replace:
+    path: /usr/lib/sysctl.d/50-default.conf
+    regexp: '^(\s*net\.ipv4\.conf\.all\.rp_filter\s*=\s*)\d+'
+    replace: '\\g<1>1'
+  tags: ['cis_3_3_7_c','sysctl']
+
+- name: "Reload sysctl"
+  command: sysctl --system
+  changed_when: false
 
 
-grep -E 'net\.ipv4\.conf\.(all|default)\.rp_filter' /usr/lib/sysctl.d/50-default.conf
+
+# No "2" left in any sysctl.d file
+grep -R -nE 'net\.ipv4\.conf\.(all|default)\.rp_filter\s*=\s*2' /etc/sysctl.* /run/sysctl.* /usr/lib/sysctl.* || echo "OK"
+
+# Effective values
 sysctl -n net.ipv4.conf.default.rp_filter
 sysctl -n net.ipv4.conf.all.rp_filter
+
+# Per-interface (should all be 1)
+for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo "$f: $(cat "$f")"; done
