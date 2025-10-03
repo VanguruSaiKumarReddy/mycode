@@ -1,12 +1,10 @@
-- name: "5.6.5.d | Ensure umask is 027 in /etc/bashrc"
-  lineinfile:
-    path: /etc/bashrc
-    regexp: '^\s*(umask|UMASK)\s+.*$'
-    line: 'umask 027'
-    create: yes
-    mode: '0644'
-    backup: yes
-  tags: ['cis_5_6_5_d','cis','umask','bash']
+- name: "4.2.1.4.a | Ensure $FileCreateMode is set to 0640 in /etc/rsyslog.conf"
+  replace:
+    path: /etc/rsyslog.conf
+    regexp: '^(?:\$FileCreateMode|FileCreateMode).*'
+    replace: '$FileCreateMode 0640'
+  backup: yes
+  tags: ['cis_4_2_1_4_a','cis','rsyslog']
 
 
-grep -E '^\s*umask\s+027\b' /etc/bashrc
+grep -E '^\s*\$FileCreateMode' /etc/rsyslog.conf
