@@ -1,10 +1,29 @@
-- name: "4.2.1.4.a | Ensure $FileCreateMode is set to 0640 in /etc/rsyslog.conf"
+# --- CIS 5.5.3.b — Enforce password history in /etc/pam.d/system-auth ---
+
+# Ensure pwhistory is present with remember=5 and proper ordering (before pam_unix)
+- name: "5.5.3.b | Add pam_pwhistory remember=5 to system-auth"
+  lineinfile:
+    path: /etc/pam.d/system-auth
+    regexp: '^\s*password\s+requisite\s+pam_pwhistory\.so\b'
+    line: 'password    requisite     pam_pwhistory.so use_authtok remember=5'
+    insertbefore: '^\s*password\s+sufficient\s+pam_unix\.so\b'
+    create: yes
+    mode: '0644'
+    backup: yes
+  tags: ['cis_5_5_3_b','pam','password','history']
+
+# Optional: if pam_unix.so already has remember=..., strip it so pwhistory is authoritative
+- name: "5.5.3.b | Remove remember= from pam_unix.so (if present)"
   replace:
-    path: /etc/rsyslog.conf
-    regexp: '^(?:\$FileCreateMode|FileCreateMode).*'
-    replace: '$FileCreateMode 0640'
-  backup: yes
-  tags: ['cis_4_2_1_4_a','cis','rsyslog']
+    path: /etc/pam.d/system-auth
+    regexp: '^(\s*password\s+sufficient\s+pam_unix\.so\b.*)\s+remember=\d+(\s.*|$)'
+    replace: '\1\2'
+  tags: ['cis_5_5_3_b','pam','password','history']
 
 
-grep -E '^\s*\$FileCreateMode' /etc/rsyslog.conf
+
+# Show the pwhistory line with remember=5 in system-auth
+grep -E '^\s*password\s+requisite\s+pam_pwhistory\.so\b.*\bremember=([5-9]|[1-9][0-9]+)\b' /etc/pam.d/system-auth
+
+# Ensure pam_unix.so does not also carry remember= (optional sanity)
+grep -E '^\s*password\s+sufficient\s+pam_unix\.so\b' /etc/pam.d/system-auth
